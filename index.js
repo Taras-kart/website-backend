@@ -15,11 +15,11 @@ app.use(bodyParser.json());
 app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 
 // Routes
-app.use('/api/upload', require('./routes/uploadRoutes')); // Ensure /api/upload is specific
+app.use('/api/upload', require('./routes/uploadRoutes')); 
 app.use('/api/products', require('./routes/productRoutes'));
 app.use('/api/b2b-customers', require('./routes/b2bCustomerRoutes'));
 app.use('/api/b2c-customers', require('./routes/b2cCustomerRoutes'));
-app.use('/api/signup', require('./routes/b2cCustomerRoutes')); // Make sure the route is correctly wired
+app.use('/api/signup', require('./routes/b2cCustomerRoutes'));
 app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/wishlist', require('./routes/wishlistRoutes'));
 app.use('/api/cart', require('./routes/cartRoutes'));
