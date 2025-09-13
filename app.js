@@ -20,6 +20,9 @@ app.use('/wishlist', require('./routes/wishlistRoutes'));
 app.use('/cart', require('./routes/cartRoutes'));
 app.use('/user', require('./routes/userRoutes'));
 
+app.get('/', (req, res) => res.status(200).send('Taras Kart API'));
 app.get('/healthz', (req, res) => res.status(200).send('ok'));
+
+app.use((req, res) => res.status(404).send('Not found'));
 
 module.exports = app;
