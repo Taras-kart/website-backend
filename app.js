@@ -25,4 +25,16 @@ app.get('/healthz', (req, res) => res.status(200).send('ok'));
 
 app.use((req, res) => res.status(404).send('Not found'));
 
+
+app.get('/api/debug/blob-env', (req, res) => {
+  res.json({
+    hasToken: Boolean(
+      process.env.BLOB_READ_WRITE_TOKEN ||
+      process.env.VERCEL_BLOB_READ_WRITE_TOKEN ||
+      process.env.VERCEL_BLOB_RW_TOKEN
+    )
+  });
+});
+
+
 module.exports = app;
