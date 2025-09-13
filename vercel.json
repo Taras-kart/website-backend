@@ -1,9 +1,8 @@
 {
   "version": 2,
-  "builds": [
-    { "src": "api/index.js", "use": "@vercel/node@2.15.10" }
-  ],
-  "routes": [
-    { "src": "/(.*)", "dest": "/api/index.js" }
-  ]
+  "functions": {
+    "api/**/*.[jt]s": {
+      "runtime": "nodejs22.x"
+    }
+  }
 }
