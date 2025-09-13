@@ -17,7 +17,7 @@ router.post('/', upload.single('image'), async (req, res) => {
       token: process.env.BLOB_READ_WRITE_TOKEN
     });
     res.json({ imageUrl: result.url });
-  } catch (err) {
+  } catch {
     res.status(500).json({ error: 'Upload failed' });
   }
 });
