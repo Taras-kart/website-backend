@@ -3,23 +3,22 @@ const pool = require('../db');
 const router = express.Router();
 
 router.post('/tarascart', async (req, res) => {
-  const { user_id, product_id, selected_size, selected_color, quantity } = req.body;
+  const { user_id, product_id, selected_size, selected_color } = req.body;
   if (!user_id || !product_id || !selected_size || !selected_color) {
     return res.status(400).json({ message: 'Missing cart fields' });
   }
   try {
-    const qty = Number.isInteger(quantity) && quantity > 0 ? quantity : 1;
     const upd = await pool.query(
       `UPDATE tarascart
-       SET selected_size=$3, selected_color=$4, quantity=$5, updated_at=CURRENT_TIMESTAMP
+       SET selected_size=$3, selected_color=$4, updated_at=CURRENT_TIMESTAMP
        WHERE user_id=$1 AND product_id=$2`,
-      [user_id, product_id, selected_size, selected_color, qty]
+      [user_id, product_id, selected_size, selected_color]
     );
     if (upd.rowCount === 0) {
       await pool.query(
-        `INSERT INTO tarascart (user_id, product_id, selected_size, selected_color, quantity, updated_at)
-         VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)`,
-        [user_id, product_id, selected_size, selected_color, qty]
+        `INSERT INTO tarascart (user_id, product_id, selected_size, selected_color, updated_at)
+         VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)`,
+        [user_id, product_id, selected_size, selected_color]
       );
     }
     res.status(201).json({ message: 'Added to cart successfully' });
@@ -28,47 +27,11 @@ router.post('/tarascart', async (req, res) => {
   }
 });
 
-router.put('/tarascart', async (req, res) => {
-  const { user_id, product_id, quantity } = req.body;
-  if (!user_id || !product_id || !Number.isInteger(quantity) || quantity < 1) {
-    return res.status(400).json({ message: 'Missing fields for update' });
-  }
-  try {
-    const r = await pool.query(
-      `UPDATE tarascart SET quantity=$3, updated_at=CURRENT_TIMESTAMP
-       WHERE user_id=$1 AND product_id=$2`,
-      [user_id, product_id, quantity]
-    );
-    if (r.rowCount === 0) return res.status(404).json({ message: 'Cart item not found' });
-    res.json({ message: 'Quantity updated' });
-  } catch (err) {
-    res.status(500).json({ message: 'Error updating cart', error: err.message });
-  }
-});
-
-router.put('/', async (req, res) => {
-  const { user_id, product_id, quantity } = req.body;
-  if (!user_id || !product_id || !Number.isInteger(quantity) || quantity < 1) {
-    return res.status(400).json({ message: 'Missing fields for update' });
-  }
-  try {
-    const r = await pool.query(
-      `UPDATE tarascart SET quantity=$3, updated_at=CURRENT_TIMESTAMP
-       WHERE user_id=$1 AND product_id=$2`,
-      [user_id, product_id, quantity]
-    );
-    if (r.rowCount === 0) return res.status(404).json({ message: 'Cart item not found' });
-    res.json({ message: 'Quantity updated' });
-  } catch (err) {
-    res.status(500).json({ message: 'Error updating cart', error: err.message });
-  }
-});
-
 router.get('/:userId', async (req, res) => {
   const { userId } = req.params;
   try {
     const result = await pool.query(
-      `SELECT p.*, c.selected_size, c.selected_color, c.quantity
+      `SELECT p.*, c.selected_size, c.selected_color
        FROM tarascart c
        JOIN tarasproducts p ON c.product_id = p.id
        WHERE c.user_id = $1`,
@@ -81,22 +44,6 @@ router.get('/:userId', async (req, res) => {
 });
 
 router.delete('/tarascart', async (req, res) => {
-  const { user_id, product_id } = req.body;
-  if (!user_id || !product_id) {
-    return res.status(400).json({ message: 'Missing fields for delete' });
-  }
-  try {
-    await pool.query(
-      `DELETE FROM tarascart WHERE user_id=$1 AND product_id=$2`,
-      [user_id, product_id]
-    );
-    res.json({ message: 'Item removed from cart' });
-  } catch (err) {
-    res.status(500).json({ message: 'Error removing from cart', error: err.message });
-  }
-});
-
-router.delete('/', async (req, res) => {
   const { user_id, product_id } = req.body;
   if (!user_id || !product_id) {
     return res.status(400).json({ message: 'Missing fields for delete' });
