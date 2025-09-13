@@ -6,7 +6,7 @@
     "start": "node api/index.js"
   },
   "engines": {
-    "node": "22.x"
+    "node": "18.x"
   },
   "dependencies": {
     "@vercel/blob": "^0.24.1",
