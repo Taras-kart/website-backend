@@ -10,15 +10,15 @@ app.use(cors({
 
 app.use(express.json());
 
-app.use('/upload', require('./routes/uploadRoutes'));
-app.use('/products', require('./routes/productRoutes'));
-app.use('/b2b-customers', require('./routes/b2bCustomerRoutes'));
-app.use('/b2c-customers', require('./routes/b2cCustomerRoutes'));
-app.use('/signup', require('./routes/b2cCustomerRoutes'));
-app.use('/auth', require('./routes/authRoutes'));
-app.use('/wishlist', require('./routes/wishlistRoutes'));
-app.use('/cart', require('./routes/cartRoutes'));
-app.use('/user', require('./routes/userRoutes'));
+app.use('/api/upload', require('./routes/uploadRoutes'));
+app.use('/api/products', require('./routes/productRoutes'));
+app.use('/api/b2b-customers', require('./routes/b2bCustomerRoutes'));
+app.use('/api/b2c-customers', require('./routes/b2cCustomerRoutes'));
+app.use('/api/signup', require('./routes/b2cCustomerRoutes'));
+app.use('/api/auth', require('./routes/authRoutes'));
+app.use('/api/wishlist', require('./routes/wishlistRoutes'));
+app.use('/api/cart', require('./routes/cartRoutes'));
+app.use('/api/user', require('./routes/userRoutes'));
 
 app.get('/', (req, res) => res.status(200).send('Taras Kart API'));
 app.get('/healthz', (req, res) => res.status(200).send('ok'));
