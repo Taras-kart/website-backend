@@ -1,25 +1,23 @@
 {
   "name": "shopping-backend",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "api/index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "node api/index.js",
+    "start": "node api/index.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "",
+  "description": "Backend for Taras Kart",
   "dependencies": {
     "bcryptjs": "^3.0.2",
-    "body-parser": "^2.2.0",
     "cors": "^2.8.5",
-    "dotenv": "^17.2.1",
-    "express": "^5.1.0",
-    "formidable": "^3.5.4",
-    "fs": "^0.0.1-security",
-    "multer": "^2.0.1",
-    "nodemailer": "^7.0.5",
-    "path": "^0.12.7",
-    "pg": "^8.16.3"
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "multer": "^1.4.5-lts.1",
+    "nodemailer": "^6.9.13",
+    "pg": "^8.16.3",
+    "@vercel/blob": "^0.24.1"
   }
 }
