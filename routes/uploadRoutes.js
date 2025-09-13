@@ -14,11 +14,12 @@ router.post('/', upload.single('image'), async (req, res) => {
       access: 'public',
       contentType: req.file.mimetype,
       addRandomSuffix: true,
-      token: process.env.BLOB_READ_WRITE_TOKEN
+      token: process.env.BLOB_READ_WRITE_TOKEN || process.env.VERCEL_BLOB_READ_WRITE_TOKEN
     });
     res.json({ imageUrl: result.url });
-  } catch {
-    res.status(500).json({ error: 'Upload failed' });
+  } catch (err) {
+    console.error('Blob upload error:', err?.message || err);
+    res.status(500).json({ error: 'Upload failed', detail: err?.message || 'unknown' });
   }
 });
 
