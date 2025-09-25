@@ -1,3 +1,4 @@
+// D:\shopping-backend\routes\productRoutes.js
 const express = require('express');
 const pool = require('../db');
 const router = express.Router();
@@ -89,6 +90,15 @@ router.get('/', async (req, res) => {
   }
 });
 
+router.get('/category/:category', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM tarasproducts WHERE category = $1 ORDER BY id DESC', [req.params.category]);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+});
+
 router.get('/search', async (req, res) => {
   const query = req.query.q || req.query.query;
   if (!query || !String(query).trim()) {
@@ -111,7 +121,7 @@ router.get('/search', async (req, res) => {
   }
 });
 
-router.get('/:id', async (req, res) => {
+router.get('/:id(\\d+)', async (req, res) => {
   try {
     const { rows } = await pool.query('SELECT * FROM tarasproducts WHERE id = $1', [req.params.id]);
     if (!rows.length) return res.status(404).json({ message: 'Not found' });
@@ -121,7 +131,7 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-router.put('/:id', async (req, res) => {
+router.put('/:id(\\d+)', async (req, res) => {
   const {
     category,
     brand,
