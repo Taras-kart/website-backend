@@ -210,4 +210,14 @@ router.put('/:id(\\d+)', async (req, res) => {
   }
 });
 
+router.delete('/:id(\\d+)', async (req, res) => {
+  try {
+    const { rows } = await pool.query('DELETE FROM tarasproducts WHERE id = $1 RETURNING *', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ message: 'Not found' });
+    res.json({ message: 'Deleted', product: rows[0] });
+  } catch (err) {
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+});
+
 module.exports = router;
