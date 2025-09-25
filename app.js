@@ -19,6 +19,7 @@ app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/wishlist', require('./routes/wishlistRoutes'));
 app.use('/api/cart', require('./routes/cartRoutes'));
 app.use('/api/user', require('./routes/userRoutes'));
+app.use('/api/orders', require('./routes/orderRoutes'));
 
 app.get('/', (req, res) => res.status(200).send('Taras Kart API'));
 app.get('/healthz', (req, res) => res.status(200).send('ok'));
