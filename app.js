@@ -20,12 +20,16 @@ app.use('/api/wishlist', require('./routes/wishlistRoutes'));
 app.use('/api/cart', require('./routes/cartRoutes'));
 app.use('/api/user', require('./routes/userRoutes'));
 app.use('/api/orders', require('./routes/orderRoutes'));
+app.use('/api/auth-branch', require('./routes/authBranchRoutes'));
+app.use('/api/barcodes', require('./routes/barcodeRoutes'));
+app.use('/api/branch', require('./routes/branchInventoryRoutes'));
+app.use('/api/inventory', require('./routes/inventoryRoutes'));
+app.use('/api/sales', require('./routes/salesRoutes'));
 
 app.get('/', (req, res) => res.status(200).send('Taras Kart API'));
 app.get('/healthz', (req, res) => res.status(200).send('ok'));
 
 app.use((req, res) => res.status(404).send('Not found'));
-
 
 app.get('/api/debug/blob-env', (req, res) => {
   res.json({
@@ -36,6 +40,5 @@ app.get('/api/debug/blob-env', (req, res) => {
     )
   });
 });
-
 
 module.exports = app;
