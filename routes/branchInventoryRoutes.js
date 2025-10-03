@@ -103,7 +103,7 @@ router.post('/:branchId/import', requireBranchAuth, upload.single('file'), async
 
     const { rows } = await pool.query(
       `INSERT INTO import_jobs (file_name, file_url, uploaded_by, status_enum, rows_total, rows_success, rows_error, branch_id)
-       VALUES ($1, $2, $3, 'PENDING', 0, 0, 0, $4)
+       VALUES ($1, $2, $3, 'PENDING'::import_status, 0, 0, 0, $4)
        RETURNING id, file_name, file_url, uploaded_by, status_enum, rows_total, rows_success, rows_error, uploaded_at, completed_at, branch_id`,
       [req.file.originalname || name, stored.url, req.user.id, branchId]
     );
@@ -257,8 +257,8 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
              rows_error   = $3,
              status_enum  = CASE
                               WHEN $4 THEN
-                                CASE WHEN $5 THEN 'PARTIAL'
-                                     ELSE 'COMPLETE'
+                                CASE WHEN $5 THEN 'PARTIAL'::import_status
+                                     ELSE 'COMPLETE'::import_status
                                 END
                               ELSE status_enum
                             END,
