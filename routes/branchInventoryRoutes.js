@@ -18,8 +18,8 @@ const HEADER_ALIASES = {
   mrp: ['mrp', '   mrp', 'mrp ', ' retail mrp '],
   rsaleprice: ['retailprice', 'saleprice', 'sale price', 'retail price', 'rsp'],
   markcode: ['mark code', 'mark', 'marking'],
-  size: ['size '],
-  colour: ['color', 'colour ', 'color '],
+  size: ['size', 'size '],
+  colour: ['colour', 'color', 'colour ', 'color '],
   pattern: ['pattern code', 'style', 'style code'],
   fitt: ['fit', 'fit type']
 };
@@ -103,7 +103,7 @@ router.post('/:branchId/import', requireBranchAuth, upload.single('file'), async
 
     const { rows } = await pool.query(
       `INSERT INTO import_jobs (file_name, file_url, uploaded_by, status_enum, rows_total, rows_success, rows_error, branch_id)
-       VALUES ($1, $2, $3, 'PENDING'::import_status, 0, 0, 0, $4)
+       VALUES ($1, $2, $3, 'PENDING', 0, 0, 0, $4)
        RETURNING id, file_name, file_url, uploaded_by, status_enum, rows_total, rows_success, rows_error, uploaded_at, completed_at, branch_id`,
       [req.file.originalname || name, stored.url, req.user.id, branchId]
     );
@@ -176,7 +176,7 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
           err++;
           await client.query(
             `INSERT INTO import_rows (import_job_id, raw_row_json, status_enum, error_msg)
-             VALUES ($1, $2::jsonb, $3::import_row_status, $4)`,
+             VALUES ($1, $2::jsonb, $3, $4)`,
             [jobId, JSON.stringify(raw), 'ERROR', 'Missing required fields (ProductName/BrandName/SIZE/COLOUR)']
           );
           continue;
@@ -224,8 +224,8 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
 
           await client.query(
             `INSERT INTO import_rows (import_job_id, raw_row_json, status_enum, error_msg)
-             VALUES ($1, $2::jsonb, $3::import_row_status, $4)`,
-            [jobId, JSON.stringify(raw), 'SUCCESS', null]
+             VALUES ($1, $2::jsonb, $3, $4)`,
+            [jobId, JSON.stringify(raw), 'OK', null]
           );
 
           await client.query('COMMIT');
@@ -235,7 +235,7 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
           err++;
           await client.query(
             `INSERT INTO import_rows (import_job_id, raw_row_json, status_enum, error_msg)
-             VALUES ($1, $2::jsonb, $3::import_row_status, $4)`,
+             VALUES ($1, $2::jsonb, $3, $4)`,
             [jobId, JSON.stringify(raw), 'ERROR', String(e.message || 'error').slice(0, 500)]
           );
         }
@@ -248,23 +248,17 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
     const newError = (job.rows_error || 0) + err;
     const rowsDone = start + slice.length;
     const isDone = rowsDone >= totalRows;
-    const hasErrors = newError > 0;
+    const finalStatus = isDone ? (newError > 0 ? 'PARTIAL' : 'COMPLETE') : 'PENDING';
 
     await pool.query(
       `UPDATE import_jobs
-         SET rows_total   = $1,
-             rows_success = $2,
-             rows_error   = $3,
-             status_enum  = CASE
-                              WHEN $4 THEN
-                                CASE WHEN $5 THEN 'PARTIAL'::import_status
-                                     ELSE 'COMPLETE'::import_status
-                                END
-                              ELSE status_enum
-                            END,
-             completed_at = CASE WHEN $4 THEN NOW() ELSE completed_at END
-       WHERE id = $6`,
-      [totalRows, newSuccess, newError, isDone, hasErrors, jobId]
+       SET rows_total = $1,
+           rows_success = $2,
+           rows_error = $3,
+           status_enum = $4,
+           completed_at = CASE WHEN $4 IN ('COMPLETE','PARTIAL') THEN NOW() ELSE completed_at END
+       WHERE id = $5`,
+      [totalRows, newSuccess, newError, finalStatus, jobId]
     );
 
     res.json({
@@ -311,7 +305,7 @@ router.get('/:branchId/stock', requireBranchAuth, async (req, res) => {
        ORDER BY p.brand_name, p.name, v.size, v.colour`,
       [branchId]
     );
-    res.json(rows);
+  res.json(rows);
   } catch {
     res.status(500).json({ message: 'Server error' });
   }
