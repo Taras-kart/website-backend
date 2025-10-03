@@ -10,18 +10,18 @@ const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 
 const HEADER_ALIASES = {
-  productname: ['product name', 'item', 'item name'],
-  brandname: ['brand', 'brand name'],
-  costprice: ['cost', 'purchase cost'],
-  purchaseqty: ['qty', 'quantity', 'purchase qty'],
-  eancode: ['ean', 'barcode', 'bar code', 'ean code'],
-  mrp: ['mrp', '   mrp', 'mrp ', ' retail mrp '],
-  rsaleprice: ['retailprice', 'saleprice', 'sale price', 'retail price', 'rsp'],
-  markcode: ['mark code', 'mark', 'marking'],
+  productname: ['product name', 'item', 'item name', 'productname'],
+  brandname: ['brand', 'brand name', 'brandname'],
+  costprice: ['cost', 'purchase cost', 'costprice'],
+  purchaseqty: ['qty', 'quantity', 'purchase qty', 'purchaseqty'],
+  eancode: ['ean', 'barcode', 'bar code', 'ean code', 'eancode'],
+  mrp: ['mrp', '   mrp', 'mrp ', ' retail mrp ', 'mrp'],
+  rsaleprice: ['retailprice', 'saleprice', 'sale price', 'retail price', 'rsp', 'rsaleprice'],
+  markcode: ['mark code', 'mark', 'marking', 'markcode'],
   size: ['size', 'size '],
   colour: ['colour', 'color', 'colour ', 'color '],
-  pattern: ['pattern code', 'style', 'style code'],
-  fitt: ['fit', 'fit type']
+  pattern: ['pattern code', 'style', 'style code', 'pattern'],
+  fitt: ['fit', 'fit type', 'fitt']
 };
 
 function normalizeRow(raw) {
@@ -33,7 +33,7 @@ function normalizeRow(raw) {
   for (const canon of Object.keys(HEADER_ALIASES)) {
     if (out[canon] != null && out[canon] !== '') continue;
     for (const alias of HEADER_ALIASES[canon]) {
-      const a = alias.trim().toLowerCase();
+      const a = String(alias).trim().toLowerCase();
       if (out[a] != null && out[a] !== '') {
         out[canon] = out[a];
         break;
@@ -43,7 +43,13 @@ function normalizeRow(raw) {
   return out;
 }
 
+function cleanText(v) {
+  if (v == null) return '';
+  return String(v).replace(/\s+/g, ' ').trim();
+}
+
 function toNumOrNull(v) {
+  if (v === '' || v == null) return null;
   const n = parseFloat(String(v).toString().replace(/[, ]+/g, ''));
   return Number.isFinite(n) ? n : null;
 }
@@ -119,7 +125,6 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
   const jobId = parseInt(req.params.jobId, 10);
   const start = Math.max(0, parseInt(req.query.start || '0', 10));
   const limit = Math.max(1, Math.min(500, parseInt(req.query.limit || '200', 10)));
-
   if (!branchId || branchId !== Number(req.user.branch_id)) return res.status(403).json({ message: 'Forbidden' });
 
   try {
@@ -139,7 +144,6 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
 
     const resp = await axios.get(job.file_url, { responseType: 'arraybuffer' });
     const buf = Buffer.from(resp.data);
-
     const wb = XLSX.read(buf, { type: 'buffer' });
     const wsName = wb.SheetNames && wb.SheetNames[0];
     if (!wsName) return res.status(400).json({ message: 'No worksheet in file' });
@@ -150,19 +154,21 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
 
     let ok = 0;
     let err = 0;
+    const errMap = new Map();
+    const errSamples = [];
 
     const client = await pool.connect();
     try {
       for (const raw of slice) {
         const row = normalizeRow(raw);
 
-        const ProductName = String(row.productname || '').trim();
-        const BrandName = String(row.brandname || '').trim();
-        const SIZE = String(row.size || '').trim();
-        const COLOUR = String(row.colour || '').trim();
-        const PATTERN = String(row.pattern || '').trim();
-        const FITT = String(row.fitt || '').trim();
-        const MarkCode = String(row.markcode || '').trim();
+        const ProductName = cleanText(row.productname);
+        const BrandName = cleanText(row.brandname);
+        const SIZE = cleanText(row.size);
+        const COLOUR = cleanText(row.colour);
+        const PATTERN = cleanText(row.pattern) || null;
+        const FITT = cleanText(row.fitt) || null;
+        const MarkCode = cleanText(row.markcode) || null;
 
         const MRP = toNumOrNull(row.mrp);
         const RSalePrice = toNumOrNull(row.rsaleprice);
@@ -170,15 +176,18 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
         const PurchaseQty = toIntOrZero(row.purchaseqty);
 
         let EANCode = row.eancode;
-        if (EANCode != null && EANCode !== '') EANCode = String(EANCode).trim();
+        if (EANCode != null && EANCode !== '') EANCode = cleanText(EANCode);
 
         if (!ProductName || !BrandName || !SIZE || !COLOUR) {
+          const msg = 'Missing required fields (ProductName/BrandName/SIZE/COLOUR)';
           err++;
           await client.query(
             `INSERT INTO import_rows (import_job_id, raw_row_json, status_enum, error_msg)
              VALUES ($1, $2::jsonb, $3, $4)`,
-            [jobId, JSON.stringify(raw), 'ERROR', 'Missing required fields (ProductName/BrandName/SIZE/COLOUR)']
+            [jobId, JSON.stringify(raw), 'ERROR', msg]
           );
+          errMap.set(msg, (errMap.get(msg) || 0) + 1);
+          if (errSamples.length < 5) errSamples.push({ row: raw, error: msg });
           continue;
         }
 
@@ -191,7 +200,7 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
              ON CONFLICT (name, brand_name, pattern_code)
              DO UPDATE SET fit_type = EXCLUDED.fit_type, mark_code = EXCLUDED.mark_code
              RETURNING id`,
-            [ProductName, BrandName, PATTERN || null, FITT || null, MarkCode || null]
+            [ProductName, BrandName, PATTERN, FITT, MarkCode]
           );
           const productId = pRes.rows[0].id;
 
@@ -233,11 +242,14 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
         } catch (e) {
           await client.query('ROLLBACK');
           err++;
+          const msg = String(e.message || 'error').slice(0, 500);
           await client.query(
             `INSERT INTO import_rows (import_job_id, raw_row_json, status_enum, error_msg)
              VALUES ($1, $2::jsonb, $3, $4)`,
-            [jobId, JSON.stringify(raw), 'ERROR', String(e.message || 'error').slice(0, 500)]
+            [jobId, JSON.stringify(raw), 'ERROR', msg]
           );
+          errMap.set(msg, (errMap.get(msg) || 0) + 1);
+          if (errSamples.length < 5) errSamples.push({ row: raw, error: msg });
         }
       }
     } finally {
@@ -261,13 +273,20 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
       [totalRows, newSuccess, newError, finalStatus, jobId]
     );
 
+    const error_counts = Array.from(errMap.entries())
+      .map(([message, count]) => ({ message, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 10);
+
     res.json({
       done: isDone,
       processed: slice.length,
       ok,
       err,
       totalRows,
-      nextStart: rowsDone
+      nextStart: rowsDone,
+      error_counts,
+      errors_sample: errSamples
     });
   } catch (e) {
     res.status(500).json({ message: e?.message || 'Server error' });
