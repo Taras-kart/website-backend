@@ -87,7 +87,7 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
 
     const job = j.rows[0];
     if (!job.file_url) return res.status(400).json({ message: 'Job has no file_url' });
-    if (job.status_enum && job.status_enum.startsWith('COMPLETED')) {
+    if (job.status_enum && String(job.status_enum).startsWith('COMPLETED')) {
       return res.json({ done: true, processed: 0, nextStart: start });
     }
 
@@ -201,16 +201,16 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
 
     await pool.query(
       `UPDATE import_jobs
-       SET rows_total = $1, rows_success = $2, rows_error = $3, status_enum = $4,
-           completed_at = CASE WHEN $4 LIKE 'COMPLETED%' THEN NOW() ELSE completed_at END
+       SET rows_total = $1,
+           rows_success = $2,
+           rows_error = $3,
+           status_enum = CASE
+             WHEN $4 THEN CASE WHEN $3 > 0 THEN 'COMPLETED_WITH_ERRORS' ELSE 'COMPLETED' END
+             ELSE status_enum
+           END,
+           completed_at = CASE WHEN $4 THEN NOW() ELSE completed_at END
        WHERE id = $5`,
-      [
-        totalRows,
-        newSuccess,
-        newError,
-        isDone ? (newError ? 'COMPLETED_WITH_ERRORS' : 'COMPLETED') : 'IN_PROGRESS',
-        jobId
-      ]
+      [totalRows, newSuccess, newError, isDone, jobId]
     );
 
     res.json({
@@ -219,7 +219,7 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
       ok,
       err,
       totalRows,
-      nextStart: isDone ? rowsDone : rowsDone
+      nextStart: rowsDone
     });
   } catch {
     res.status(500).json({ message: 'Server error' });
