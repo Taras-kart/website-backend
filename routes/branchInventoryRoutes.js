@@ -22,20 +22,6 @@ function requireBranchAuth(req, res, next) {
   }
 }
 
-async function ensureImportRowsTable() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS import_rows (
-      id SERIAL PRIMARY KEY,
-      import_job_id INT NOT NULL REFERENCES import_jobs(id) ON DELETE CASCADE,
-      raw_row_json JSONB NOT NULL,
-      status_enum TEXT NOT NULL,
-      error_msg TEXT,
-      created_at TIMESTAMP DEFAULT NOW()
-    );
-    CREATE INDEX IF NOT EXISTS idx_import_rows_job ON import_rows(import_job_id);
-  `);
-}
-
 router.get('/:branchId/import-jobs', requireBranchAuth, async (req, res) => {
   const branchId = parseInt(req.params.branchId, 10);
   if (!branchId || branchId !== Number(req.user.branch_id)) return res.status(403).json({ message: 'Forbidden' });
@@ -49,9 +35,8 @@ router.get('/:branchId/import-jobs', requireBranchAuth, async (req, res) => {
       [branchId]
     );
     res.json(rows);
-  } catch (e) {
-    console.error('import-jobs error:', e);
-    res.status(500).json({ message: e.message || 'Server error' });
+  } catch {
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
@@ -80,9 +65,8 @@ router.post('/:branchId/import', requireBranchAuth, upload.single('file'), async
     );
 
     res.status(201).json(rows[0]);
-  } catch (e) {
-    console.error('import create error:', e);
-    res.status(500).json({ message: e.message || 'Server error' });
+  } catch {
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
@@ -91,11 +75,10 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
   const jobId = parseInt(req.params.jobId, 10);
   const start = Math.max(0, parseInt(req.query.start || '0', 10));
   const limit = Math.max(1, Math.min(500, parseInt(req.query.limit || '200', 10)));
+
   if (!branchId || branchId !== Number(req.user.branch_id)) return res.status(403).json({ message: 'Forbidden' });
 
   try {
-    await ensureImportRowsTable();
-
     const j = await pool.query(
       `SELECT id, file_url, status_enum, rows_total, rows_success, rows_error
        FROM import_jobs WHERE id = $1 AND branch_id = $2`,
@@ -105,20 +88,21 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
 
     const job = j.rows[0];
     if (!job.file_url) return res.status(400).json({ message: 'Job has no file_url' });
-
-    const current = String(job.status_enum || '').toUpperCase();
-    if (current === 'COMPLETE' || current === 'PARTIAL') {
-      return res.json({ done: true, processed: 0, nextStart: start, ok: 0, err: 0, totalRows: job.rows_total || 0 });
+    const st = String(job.status_enum || '').toUpperCase();
+    if (st === 'COMPLETE' || st === 'PARTIAL') {
+      return res.json({ done: true, processed: 0, nextStart: start });
     }
 
     const resp = await axios.get(job.file_url, { responseType: 'arraybuffer' });
     const buf = Buffer.from(resp.data);
+
     const wb = XLSX.read(buf, { type: 'buffer' });
     const wsName = wb.SheetNames && wb.SheetNames[0];
     if (!wsName) return res.status(400).json({ message: 'No worksheet in file' });
 
     const allRows = XLSX.utils.sheet_to_json(wb.Sheets[wsName], { defval: '' });
     const totalRows = allRows.length;
+
     const slice = allRows.slice(start, start + limit);
 
     let ok = 0;
@@ -216,17 +200,23 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
     const newError = (job.rows_error || 0) + err;
     const rowsDone = start + slice.length;
     const isDone = rowsDone >= totalRows;
-    const finalStatus = isDone ? (newError > 0 ? 'PARTIAL' : 'COMPLETE') : 'PENDING';
+    const hasErrors = newError > 0;
 
     await pool.query(
       `UPDATE import_jobs
-       SET rows_total = $1,
-           rows_success = $2,
-           rows_error = $3,
-           status_enum = $4,
-           completed_at = CASE WHEN $4 IN ('COMPLETE','PARTIAL') THEN NOW() ELSE completed_at END
-       WHERE id = $5`,
-      [totalRows, newSuccess, newError, finalStatus, jobId]
+         SET rows_total   = $1,
+             rows_success = $2,
+             rows_error   = $3,
+             status_enum  = CASE
+                              WHEN $4 THEN
+                                CASE WHEN $5 THEN 'PARTIAL'::status_enum
+                                     ELSE 'COMPLETE'::status_enum
+                                END
+                              ELSE status_enum
+                            END,
+             completed_at = CASE WHEN $4 THEN NOW() ELSE completed_at END
+       WHERE id = $6`,
+      [totalRows, newSuccess, newError, isDone, hasErrors, jobId]
     );
 
     res.json({
@@ -238,8 +228,7 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
       nextStart: rowsDone
     });
   } catch (e) {
-    console.error('process error:', e);
-    res.status(500).json({ message: e.message || 'Server error' });
+    res.status(500).json({ message: e?.message || 'Server error' });
   }
 });
 
@@ -275,9 +264,8 @@ router.get('/:branchId/stock', requireBranchAuth, async (req, res) => {
       [branchId]
     );
     res.json(rows);
-  } catch (e) {
-    console.error('stock error:', e);
-    res.status(500).json({ message: e.message || 'Server error' });
+  } catch {
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
