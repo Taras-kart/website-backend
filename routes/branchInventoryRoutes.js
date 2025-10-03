@@ -90,30 +90,83 @@ router.get('/:branchId/import-jobs', requireBranchAuth, async (req, res) => {
   }
 });
 
+router.get('/:branchId/import-rows', requireBranchAuth, async (req, res) => {
+  const branchId = parseInt(req.params.branchId, 10);
+  if (!branchId || branchId !== Number(req.user.branch_id)) return res.status(403).json({ message: 'Forbidden' });
+  const jobId = req.query.jobId ? parseInt(req.query.jobId, 10) : null;
+  const offset = Math.max(0, parseInt(req.query.offset || '0', 10));
+  const limit = Math.max(1, Math.min(500, parseInt(req.query.limit || '200', 10)));
+  const status = String(req.query.status || '').trim();
+  try {
+    let job;
+    if (jobId) {
+      const r = await pool.query(`SELECT * FROM import_jobs WHERE id=$1 AND branch_id=$2`, [jobId, branchId]);
+      if (!r.rows.length) return res.status(404).json({ message: 'Job not found' });
+      job = r.rows[0];
+    } else {
+      const r = await pool.query(
+        `SELECT * FROM import_jobs WHERE branch_id=$1 ORDER BY id DESC LIMIT 1`,
+        [branchId]
+      );
+      if (!r.rows.length) return res.json({ job: null, rows: [], nextOffset: offset, total: 0 });
+      job = r.rows[0];
+    }
+    const params = [job.id];
+    let where = `import_job_id = $1`;
+    if (status) {
+      params.push(status);
+      where += ` AND status_enum = $${params.length}`;
+    }
+    const totalQ = await pool.query(`SELECT COUNT(*)::int AS c FROM import_rows WHERE ${where}`, params);
+    params.push(limit, offset);
+    const rowsQ = await pool.query(
+      `SELECT id, status_enum, error_msg, raw_row_json
+       FROM import_rows
+       WHERE ${where}
+       ORDER BY id ASC
+       LIMIT $${params.length-1} OFFSET $${params.length}`,
+      params
+    );
+    const nextOffset = offset + rowsQ.rows.length;
+    res.json({
+      job: {
+        id: job.id,
+        file_name: job.file_name,
+        status_enum: job.status_enum,
+        rows_total: job.rows_total,
+        rows_success: job.rows_success,
+        rows_error: job.rows_error,
+        uploaded_at: job.uploaded_at,
+        completed_at: job.completed_at
+      },
+      rows: rowsQ.rows,
+      nextOffset,
+      total: totalQ.rows[0].c
+    });
+  } catch {
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 router.post('/:branchId/import', requireBranchAuth, upload.single('file'), async (req, res) => {
   const branchId = parseInt(req.params.branchId, 10);
   if (!branchId || branchId !== Number(req.user.branch_id)) return res.status(403).json({ message: 'Forbidden' });
   if (!req.file) return res.status(400).json({ message: 'File required' });
-
   const token =
     process.env.BLOB_READ_WRITE_TOKEN ||
     process.env.VERCEL_BLOB_READ_WRITE_TOKEN ||
     process.env.VERCEL_BLOB_RW_TOKEN;
-
   if (!token) return res.status(500).json({ message: 'Upload store not configured' });
-
   try {
     const ext = (req.file.originalname.split('.').pop() || 'xlsx').toLowerCase();
     const name = `${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
     const stored = await put(name, req.file.buffer, { access: 'public', contentType: req.file.mimetype, token });
-
     const { rows } = await pool.query(
       `INSERT INTO import_jobs (file_name, file_url, uploaded_by, status_enum, rows_total, rows_success, rows_error, branch_id)
        VALUES ($1, $2, $3, 'PENDING', 0, 0, 0, $4)
        RETURNING id, file_name, file_url, uploaded_by, status_enum, rows_total, rows_success, rows_error, uploaded_at, completed_at, branch_id`,
       [req.file.originalname || name, stored.url, req.user.id, branchId]
     );
-
     res.status(201).json(rows[0]);
   } catch {
     res.status(500).json({ message: 'Server error' });
@@ -126,7 +179,6 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
   const start = Math.max(0, parseInt(req.query.start || '0', 10));
   const limit = Math.max(1, Math.min(500, parseInt(req.query.limit || '200', 10)));
   if (!branchId || branchId !== Number(req.user.branch_id)) return res.status(403).json({ message: 'Forbidden' });
-
   try {
     const j = await pool.query(
       `SELECT id, file_url, status_enum, rows_total, rows_success, rows_error
@@ -134,34 +186,28 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
       [jobId, branchId]
     );
     if (!j.rows.length) return res.status(404).json({ message: 'Job not found' });
-
     const job = j.rows[0];
     if (!job.file_url) return res.status(400).json({ message: 'Job has no file_url' });
     const st = String(job.status_enum || '').toUpperCase();
     if (st === 'COMPLETE' || st === 'PARTIAL') {
-      return res.json({ done: true, processed: 0, nextStart: start });
+      return res.json({ done: true, processed: 0, nextStart: start, ok: 0, err: 0, totalRows: job.rows_total || 0 });
     }
-
     const resp = await axios.get(job.file_url, { responseType: 'arraybuffer' });
     const buf = Buffer.from(resp.data);
     const wb = XLSX.read(buf, { type: 'buffer' });
     const wsName = wb.SheetNames && wb.SheetNames[0];
     if (!wsName) return res.status(400).json({ message: 'No worksheet in file' });
-
     const allRows = XLSX.utils.sheet_to_json(wb.Sheets[wsName], { defval: '' });
     const totalRows = allRows.length;
     const slice = allRows.slice(start, start + limit);
-
     let ok = 0;
     let err = 0;
     const errMap = new Map();
     const errSamples = [];
-
     const client = await pool.connect();
     try {
       for (const raw of slice) {
         const row = normalizeRow(raw);
-
         const ProductName = cleanText(row.productname);
         const BrandName = cleanText(row.brandname);
         const SIZE = cleanText(row.size);
@@ -169,15 +215,12 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
         const PATTERN = cleanText(row.pattern) || null;
         const FITT = cleanText(row.fitt) || null;
         const MarkCode = cleanText(row.markcode) || null;
-
         const MRP = toNumOrNull(row.mrp);
         const RSalePrice = toNumOrNull(row.rsaleprice);
         const CostPrice = toNumOrNull(row.costprice) ?? 0;
         const PurchaseQty = toIntOrZero(row.purchaseqty);
-
         let EANCode = row.eancode;
         if (EANCode != null && EANCode !== '') EANCode = cleanText(EANCode);
-
         if (!ProductName || !BrandName || !SIZE || !COLOUR) {
           const msg = 'Missing required fields (ProductName/BrandName/SIZE/COLOUR)';
           err++;
@@ -190,10 +233,8 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
           if (errSamples.length < 5) errSamples.push({ row: raw, error: msg });
           continue;
         }
-
         try {
           await client.query('BEGIN');
-
           const pRes = await client.query(
             `INSERT INTO products (name, brand_name, pattern_code, fit_type, mark_code)
              VALUES ($1, $2, $3, $4, $5)
@@ -203,7 +244,6 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
             [ProductName, BrandName, PATTERN, FITT, MarkCode]
           );
           const productId = pRes.rows[0].id;
-
           const vRes = await client.query(
             `INSERT INTO product_variants (product_id, size, colour, is_active, mrp, sale_price, cost_price)
              VALUES ($1, $2, $3, TRUE, $4, $5, $6)
@@ -213,7 +253,6 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
             [productId, SIZE, COLOUR, MRP, RSalePrice, CostPrice]
           );
           const variantId = vRes.rows[0].id;
-
           if (EANCode) {
             await client.query(
               `INSERT INTO barcodes (variant_id, ean_code)
@@ -222,7 +261,6 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
               [variantId, EANCode]
             );
           }
-
           await client.query(
             `INSERT INTO branch_variant_stock (branch_id, variant_id, on_hand, reserved, is_active)
              VALUES ($1, $2, $3, 0, TRUE)
@@ -230,13 +268,11 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
              DO UPDATE SET on_hand = branch_variant_stock.on_hand + EXCLUDED.on_hand, is_active = TRUE`,
             [branchId, variantId, PurchaseQty]
           );
-
           await client.query(
             `INSERT INTO import_rows (import_job_id, raw_row_json, status_enum, error_msg)
              VALUES ($1, $2::jsonb, $3, $4)`,
             [jobId, JSON.stringify(raw), 'OK', null]
           );
-
           await client.query('COMMIT');
           ok++;
         } catch (e) {
@@ -255,13 +291,11 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
     } finally {
       client.release();
     }
-
     const newSuccess = (job.rows_success || 0) + ok;
     const newError = (job.rows_error || 0) + err;
     const rowsDone = start + slice.length;
     const isDone = rowsDone >= totalRows;
     const finalStatus = isDone ? (newError > 0 ? 'PARTIAL' : 'COMPLETE') : 'PENDING';
-
     await pool.query(
       `UPDATE import_jobs
          SET rows_total   = $1,
@@ -272,12 +306,7 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
        WHERE id = $5`,
       [totalRows, newSuccess, newError, finalStatus, jobId]
     );
-
-    const error_counts = Array.from(errMap.entries())
-      .map(([message, count]) => ({ message, count }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 10);
-
+    const error_counts = Array.from(errMap.entries()).map(([message, count]) => ({ message, count })).sort((a, b) => b.count - a.count).slice(0, 10);
     res.json({
       done: isDone,
       processed: slice.length,
