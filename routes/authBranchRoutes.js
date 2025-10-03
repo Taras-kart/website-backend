@@ -4,6 +4,10 @@ const bcrypt = require('bcryptjs');
 const { sign, requireAuth } = require('../middleware/auth');
 const router = express.Router();
 
+function isBcryptHash(s = '') {
+  return typeof s === 'string' && (s.startsWith('$2a$') || s.startsWith('$2b$') || s.startsWith('$2y$'));
+}
+
 router.post('/login', async (req, res) => {
   const { username, password } = req.body || {};
   if (!username || !password) return res.status(400).json({ message: 'username and password required' });
@@ -11,7 +15,12 @@ router.post('/login', async (req, res) => {
     const { rows } = await pool.query('SELECT * FROM users WHERE username = $1 AND is_active IS NOT FALSE', [username]);
     if (!rows.length) return res.status(401).json({ message: 'Invalid credentials' });
     const u = rows[0];
-    const ok = await bcrypt.compare(password, u.hashed_pw);
+    let ok = false;
+    if (isBcryptHash(u.hashed_pw)) {
+      ok = await bcrypt.compare(password, u.hashed_pw);
+    } else {
+      ok = password === u.hashed_pw;
+    }
     if (!ok) return res.status(401).json({ message: 'Invalid credentials' });
     await pool.query('UPDATE users SET last_login = NOW() WHERE id = $1', [u.id]);
     const token = sign(u);
@@ -40,7 +49,13 @@ router.post('/change-password', requireAuth, async (req, res) => {
   try {
     const { rows } = await pool.query('SELECT hashed_pw FROM users WHERE id = $1', [req.user.id]);
     if (!rows.length) return res.status(404).json({ message: 'Not found' });
-    const ok = await bcrypt.compare(old_password, rows[0].hashed_pw);
+    let ok = false;
+    const hp = rows[0].hashed_pw;
+    if (isBcryptHash(hp)) {
+      ok = await bcrypt.compare(old_password, hp);
+    } else {
+      ok = old_password === hp;
+    }
     if (!ok) return res.status(401).json({ message: 'Invalid credentials' });
     const hashed = await bcrypt.hash(new_password, 10);
     await pool.query('UPDATE users SET hashed_pw = $1 WHERE id = $2', [hashed, req.user.id]);
