@@ -88,8 +88,7 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
 
     const job = j.rows[0];
     if (!job.file_url) return res.status(400).json({ message: 'Job has no file_url' });
-    const st = String(job.status_enum || '').toUpperCase();
-    if (st === 'COMPLETE' || st === 'PARTIAL') {
+    if (String(job.status_enum || '').toUpperCase().startsWith('COMPLETED')) {
       return res.json({ done: true, processed: 0, nextStart: start });
     }
 
@@ -200,7 +199,7 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
     const newError = (job.rows_error || 0) + err;
     const rowsDone = start + slice.length;
     const isDone = rowsDone >= totalRows;
-    const finalStatus = isDone ? (newError > 0 ? 'PARTIAL' : 'COMPLETE') : 'PENDING';
+    const finalStatus = isDone ? (newError > 0 ? 'COMPLETED_WITH_ERRORS' : 'COMPLETED') : 'PENDING';
 
     await pool.query(
       `UPDATE import_jobs
@@ -208,7 +207,7 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
            rows_success = $2,
            rows_error = $3,
            status_enum = $4,
-           completed_at = CASE WHEN $4 IN ('COMPLETE','PARTIAL') THEN NOW() ELSE completed_at END
+           completed_at = CASE WHEN $4 IN ('COMPLETED','COMPLETED_WITH_ERRORS') THEN NOW() ELSE completed_at END
        WHERE id = $5`,
       [totalRows, newSuccess, newError, finalStatus, jobId]
     );
@@ -257,7 +256,7 @@ router.get('/:branchId/stock', requireBranchAuth, async (req, res) => {
        ORDER BY p.brand_name, p.name, v.size, v.colour`,
       [branchId]
     );
-    res.json(rows);
+  res.json(rows);
   } catch {
     res.status(500).json({ message: 'Server error' });
   }
