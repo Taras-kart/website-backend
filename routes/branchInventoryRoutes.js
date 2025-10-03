@@ -128,8 +128,8 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
           err++;
           await client.query(
             `INSERT INTO import_rows (import_job_id, raw_row_json, status_enum, error_msg)
-             VALUES ($1,$2::jsonb,'ERROR',$3)`,
-            [jobId, JSON.stringify(raw), 'Missing required fields']
+             VALUES ($1, $2::jsonb, $3::import_row_status, $4)`,
+            [jobId, JSON.stringify(raw), 'ERROR', 'Missing required fields']
           );
           continue;
         }
@@ -139,7 +139,7 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
 
           const pRes = await client.query(
             `INSERT INTO products (name, brand_name, pattern_code, fit_type, mark_code)
-             VALUES ($1,$2,$3,$4,$5)
+             VALUES ($1, $2, $3, $4, $5)
              ON CONFLICT (name, brand_name, pattern_code)
              DO UPDATE SET fit_type = EXCLUDED.fit_type, mark_code = EXCLUDED.mark_code
              RETURNING id`,
@@ -149,7 +149,7 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
 
           const vRes = await client.query(
             `INSERT INTO product_variants (product_id, size, colour, is_active, mrp, sale_price, cost_price)
-             VALUES ($1,$2,$3,TRUE,$4,$5,$6)
+             VALUES ($1, $2, $3, TRUE, $4, $5, $6)
              ON CONFLICT (product_id, size, colour)
              DO UPDATE SET is_active = TRUE, mrp = EXCLUDED.mrp, sale_price = EXCLUDED.sale_price, cost_price = EXCLUDED.cost_price
              RETURNING id`,
@@ -160,7 +160,7 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
           if (EANCode) {
             await client.query(
               `INSERT INTO barcodes (variant_id, ean_code)
-               VALUES ($1,$2)
+               VALUES ($1, $2)
                ON CONFLICT (ean_code) DO UPDATE SET variant_id = EXCLUDED.variant_id`,
               [variantId, EANCode]
             );
@@ -168,7 +168,7 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
 
           await client.query(
             `INSERT INTO branch_variant_stock (branch_id, variant_id, on_hand, reserved, is_active)
-             VALUES ($1,$2,$3,0,TRUE)
+             VALUES ($1, $2, $3, 0, TRUE)
              ON CONFLICT (branch_id, variant_id)
              DO UPDATE SET on_hand = branch_variant_stock.on_hand + EXCLUDED.on_hand, is_active = TRUE`,
             [branchId, variantId, PurchaseQty]
@@ -176,8 +176,8 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
 
           await client.query(
             `INSERT INTO import_rows (import_job_id, raw_row_json, status_enum, error_msg)
-             VALUES ($1,$2::jsonb,'OK',NULL)`,
-            [jobId, JSON.stringify(raw)]
+             VALUES ($1, $2::jsonb, $3::import_row_status, $4)`,
+            [jobId, JSON.stringify(raw), 'SUCCESS', null]
           );
 
           await client.query('COMMIT');
@@ -187,8 +187,8 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
           err++;
           await client.query(
             `INSERT INTO import_rows (import_job_id, raw_row_json, status_enum, error_msg)
-             VALUES ($1,$2::jsonb,'ERROR',$3)`,
-            [jobId, JSON.stringify(raw), String(e.message || 'error').slice(0, 500)]
+             VALUES ($1, $2::jsonb, $3::import_row_status, $4)`,
+            [jobId, JSON.stringify(raw), 'ERROR', String(e.message || 'error').slice(0, 500)]
           );
         }
       }
@@ -200,17 +200,23 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
     const newError = (job.rows_error || 0) + err;
     const rowsDone = start + slice.length;
     const isDone = rowsDone >= totalRows;
-    const finalVal = isDone ? (newError > 0 ? 'PARTIAL' : 'COMPLETE') : null;
+    const hasErrors = newError > 0;
 
     await pool.query(
       `UPDATE import_jobs
          SET rows_total   = $1,
              rows_success = $2,
              rows_error   = $3,
-             status_enum  = CASE WHEN $4 THEN $5::import_status ELSE status_enum END,
+             status_enum  = CASE
+                              WHEN $4 THEN
+                                CASE WHEN $5 THEN 'PARTIAL'
+                                     ELSE 'COMPLETE'
+                                END
+                              ELSE status_enum
+                            END,
              completed_at = CASE WHEN $4 THEN NOW() ELSE completed_at END
        WHERE id = $6`,
-      [totalRows, newSuccess, newError, isDone, finalVal, jobId]
+      [totalRows, newSuccess, newError, isDone, hasErrors, jobId]
     );
 
     res.json({
@@ -257,7 +263,7 @@ router.get('/:branchId/stock', requireBranchAuth, async (req, res) => {
        ORDER BY p.brand_name, p.name, v.size, v.colour`,
       [branchId]
     );
-  res.json(rows);
+    res.json(rows);
   } catch {
     res.status(500).json({ message: 'Server error' });
   }
