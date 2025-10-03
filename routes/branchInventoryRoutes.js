@@ -9,6 +9,50 @@ const axios = require('axios');
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 
+const HEADER_ALIASES = {
+  productname: ['product name', 'item', 'item name'],
+  brandname: ['brand', 'brand name'],
+  costprice: ['cost', 'purchase cost'],
+  purchaseqty: ['qty', 'quantity', 'purchase qty'],
+  eancode: ['ean', 'barcode', 'bar code', 'ean code'],
+  mrp: ['mrp', '   mrp', 'mrp ', ' retail mrp '],
+  rsaleprice: ['retailprice', 'saleprice', 'sale price', 'retail price', 'rsp'],
+  markcode: ['mark code', 'mark', 'marking'],
+  size: ['size '],
+  colour: ['color', 'colour ', 'color '],
+  pattern: ['pattern code', 'style', 'style code'],
+  fitt: ['fit', 'fit type']
+};
+
+function normalizeRow(raw) {
+  const out = {};
+  for (const [k, v] of Object.entries(raw)) {
+    const key = String(k).trim().toLowerCase();
+    out[key] = v;
+  }
+  for (const canon of Object.keys(HEADER_ALIASES)) {
+    if (out[canon] != null && out[canon] !== '') continue;
+    for (const alias of HEADER_ALIASES[canon]) {
+      const a = alias.trim().toLowerCase();
+      if (out[a] != null && out[a] !== '') {
+        out[canon] = out[a];
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+function toNumOrNull(v) {
+  const n = parseFloat(String(v).toString().replace(/[, ]+/g, ''));
+  return Number.isFinite(n) ? n : null;
+}
+
+function toIntOrZero(v) {
+  const n = parseInt(String(v).toString().replace(/[, ]+/g, ''), 10);
+  return Number.isFinite(n) ? n : 0;
+}
+
 function requireBranchAuth(req, res, next) {
   const hdr = req.headers.authorization || '';
   const token = hdr.startsWith('Bearer ') ? hdr.slice(7) : '';
@@ -59,9 +103,9 @@ router.post('/:branchId/import', requireBranchAuth, upload.single('file'), async
 
     const { rows } = await pool.query(
       `INSERT INTO import_jobs (file_name, file_url, uploaded_by, status_enum, rows_total, rows_success, rows_error, branch_id)
-       VALUES ($1, $2, $3, $4::import_status, 0, 0, 0, $5)
+       VALUES ($1, $2, $3, 'PENDING', 0, 0, 0, $4)
        RETURNING id, file_name, file_url, uploaded_by, status_enum, rows_total, rows_success, rows_error, uploaded_at, completed_at, branch_id`,
-      [req.file.originalname || name, stored.url, req.user.id, 'PENDING', branchId]
+      [req.file.originalname || name, stored.url, req.user.id, branchId]
     );
 
     res.status(201).json(rows[0]);
@@ -102,7 +146,6 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
 
     const allRows = XLSX.utils.sheet_to_json(wb.Sheets[wsName], { defval: '' });
     const totalRows = allRows.length;
-
     const slice = allRows.slice(start, start + limit);
 
     let ok = 0;
@@ -111,25 +154,30 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
     const client = await pool.connect();
     try {
       for (const raw of slice) {
-        const ProductName = String(raw.ProductName || raw.productname || raw['Product Name'] || '').trim();
-        const BrandName = String(raw.BrandName || raw.brandname || raw.Brand || '').trim();
-        const CostPrice = parseFloat(String(raw.CostPrice || raw.costprice || raw.Cost || 0)) || 0;
-        const PurchaseQty = parseInt(String(raw.PurchaseQty || raw.purchaseqty || raw.Qty || 0), 10) || 0;
-        const EANCode = String(raw.EANCode || raw.eancode || raw.EAN || raw.Barcode || '').trim();
-        const MRP = parseFloat(String(raw.MRP || raw.mrp || 0)) || null;
-        const RSalePrice = parseFloat(String(raw.RSalePrice || raw.RetailPrice || raw.SalePrice || 0)) || null;
-        const MarkCode = String(raw.MarkCode || raw.markcode || raw['Mark Code'] || '').trim();
-        const SIZE = String(raw.SIZE || raw.Size || '').trim();
-        const COLOUR = String(raw.COLOUR || raw.Colour || raw.Color || '').trim();
-        const PATTERN = String(raw.PATTERN || raw.Pattern || '').trim();
-        const FITT = String(raw.FITT || raw.Fit || '').trim();
+        const row = normalizeRow(raw);
+
+        const ProductName = String(row.productname || '').trim();
+        const BrandName = String(row.brandname || '').trim();
+        const SIZE = String(row.size || '').trim();
+        const COLOUR = String(row.colour || '').trim();
+        const PATTERN = String(row.pattern || '').trim();
+        const FITT = String(row.fitt || '').trim();
+        const MarkCode = String(row.markcode || '').trim();
+
+        const MRP = toNumOrNull(row.mrp);
+        const RSalePrice = toNumOrNull(row.rsaleprice);
+        const CostPrice = toNumOrNull(row.costprice) ?? 0;
+        const PurchaseQty = toIntOrZero(row.purchaseqty);
+
+        let EANCode = row.eancode;
+        if (EANCode != null && EANCode !== '') EANCode = String(EANCode).trim();
 
         if (!ProductName || !BrandName || !SIZE || !COLOUR) {
           err++;
           await client.query(
             `INSERT INTO import_rows (import_job_id, raw_row_json, status_enum, error_msg)
              VALUES ($1, $2::jsonb, $3::import_row_status, $4)`,
-            [jobId, JSON.stringify(raw), 'ERROR', 'Missing required fields']
+            [jobId, JSON.stringify(raw), 'ERROR', 'Missing required fields (ProductName/BrandName/SIZE/COLOUR)']
           );
           continue;
         }
@@ -209,8 +257,8 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
              rows_error   = $3,
              status_enum  = CASE
                               WHEN $4 THEN
-                                CASE WHEN $5 THEN 'PARTIAL'::import_status
-                                     ELSE 'COMPLETE'::import_status
+                                CASE WHEN $5 THEN 'PARTIAL'
+                                     ELSE 'COMPLETE'
                                 END
                               ELSE status_enum
                             END,
