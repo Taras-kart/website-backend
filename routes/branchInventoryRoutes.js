@@ -252,11 +252,11 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
 
     await pool.query(
       `UPDATE import_jobs
-       SET rows_total = $1,
-           rows_success = $2,
-           rows_error = $3,
-           status_enum = $4,
-           completed_at = CASE WHEN $4 IN ('COMPLETE','PARTIAL') THEN NOW() ELSE completed_at END
+         SET rows_total   = $1,
+             rows_success = $2,
+             rows_error   = $3,
+             status_enum  = $4,
+             completed_at = CASE WHEN $4 = 'COMPLETE' OR $4 = 'PARTIAL' THEN NOW() ELSE completed_at END
        WHERE id = $5`,
       [totalRows, newSuccess, newError, finalStatus, jobId]
     );
@@ -305,7 +305,7 @@ router.get('/:branchId/stock', requireBranchAuth, async (req, res) => {
        ORDER BY p.brand_name, p.name, v.size, v.colour`,
       [branchId]
     );
-  res.json(rows);
+    res.json(rows);
   } catch {
     res.status(500).json({ message: 'Server error' });
   }
