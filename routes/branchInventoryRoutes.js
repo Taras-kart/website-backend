@@ -4,6 +4,7 @@ const multer = require('multer');
 const XLSX = require('xlsx');
 const pool = require('../db');
 const { put } = require('@vercel/blob');
+const axios = require('axios');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
@@ -87,12 +88,13 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
 
     const job = j.rows[0];
     if (!job.file_url) return res.status(400).json({ message: 'Job has no file_url' });
-    if (String(job.status_enum).toUpperCase() === 'COMPLETE' || String(job.status_enum).toUpperCase() === 'PARTIAL') {
+    const st = String(job.status_enum || '').toUpperCase();
+    if (st === 'COMPLETE' || st === 'PARTIAL') {
       return res.json({ done: true, processed: 0, nextStart: start });
     }
 
-    const resp = await fetch(job.file_url);
-    const buf = Buffer.from(await resp.arrayBuffer());
+    const resp = await axios.get(job.file_url, { responseType: 'arraybuffer' });
+    const buf = Buffer.from(resp.data);
 
     const wb = XLSX.read(buf, { type: 'buffer' });
     const wsName = wb.SheetNames && wb.SheetNames[0];
