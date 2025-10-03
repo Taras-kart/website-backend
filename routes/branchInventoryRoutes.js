@@ -1,39 +1,58 @@
-const express = require('express');
-const pool = require('../db');
-const { requireAuth } = require('../middleware/auth');
-const router = express.Router();
+const express = require('express')
+const jwt = require('jsonwebtoken')
+const multer = require('multer')
+const pool = require('../db')
 
-router.get('/variants', requireAuth, async (req, res) => {
-  const branchId = Number(req.query.branch_id || req.user.branch_id);
-  const q = String(req.query.q || '').trim();
-  const args = [branchId];
-  let where = '';
-  if (q) {
-    args.push(`%${q}%`);
-    where = `AND (p.name ILIKE $2 OR p.brand_name ILIKE $2 OR pv.colour ILIKE $2 OR pv.size ILIKE $2)`;
+const router = express.Router()
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } })
+
+function requireBranchAuth(req, res, next) {
+  const hdr = req.headers.authorization || ''
+  const token = hdr.startsWith('Bearer ') ? hdr.slice(7) : ''
+  if (!token) return res.status(401).json({ message: 'Unauthorized' })
+  try {
+    const payload = jwt.verify(token, process.env.JWT_SECRET || 'dev_secret')
+    req.user = payload
+    return next()
+  } catch {
+    return res.status(401).json({ message: 'Unauthorized' })
   }
+}
+
+router.get('/:branchId/import-jobs', requireBranchAuth, async (req, res) => {
+  const branchId = parseInt(req.params.branchId, 10)
+  if (!branchId || branchId !== Number(req.user.branch_id)) return res.status(403).json({ message: 'Forbidden' })
   try {
     const { rows } = await pool.query(
-      `SELECT pv.id AS variant_id,
-              p.id AS product_id,
-              p.name AS product_name,
-              p.brand_name,
-              pv.size,
-              pv.colour,
-              bvs.on_hand,
-              bvs.reserved
-       FROM branch_variant_stock bvs
-       JOIN product_variants pv ON pv.id = bvs.variant_id AND pv.is_active = TRUE
-       JOIN products p ON p.id = pv.product_id
-       WHERE bvs.branch_id = $1 AND bvs.is_active = TRUE
-       ${where}
-       ORDER BY p.name ASC, pv.size ASC, pv.colour ASC`,
-      args
-    );
-    res.json(rows);
+      `SELECT id, file_name, uploaded_by, status_enum, rows_total, rows_success, rows_error, uploaded_at, completed_at, branch_id
+       FROM import_jobs
+       WHERE branch_id = $1
+       ORDER BY id DESC
+       LIMIT 100`,
+      [branchId]
+    )
+    res.json(rows)
   } catch (e) {
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: 'Server error' })
   }
-});
+})
 
-module.exports = router;
+router.post('/:branchId/import', requireBranchAuth, upload.single('file'), async (req, res) => {
+  const branchId = parseInt(req.params.branchId, 10)
+  if (!branchId || branchId !== Number(req.user.branch_id)) return res.status(403).json({ message: 'Forbidden' })
+  if (!req.file) return res.status(400).json({ message: 'File required' })
+  try {
+    const fileName = req.file.originalname || `upload_${Date.now()}.bin`
+    const { rows } = await pool.query(
+      `INSERT INTO import_jobs (file_name, uploaded_by, status_enum, rows_total, rows_success, rows_error, branch_id)
+       VALUES ($1, $2, 'PENDING', 0, 0, 0, $3)
+       RETURNING id, file_name, uploaded_by, status_enum, rows_total, rows_success, rows_error, uploaded_at, completed_at, branch_id`,
+      [fileName, req.user.id, branchId]
+    )
+    res.status(201).json(rows[0])
+  } catch (e) {
+    res.status(500).json({ message: 'Server error' })
+  }
+})
+
+module.exports = router
