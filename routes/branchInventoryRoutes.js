@@ -200,23 +200,17 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
     const newError = (job.rows_error || 0) + err;
     const rowsDone = start + slice.length;
     const isDone = rowsDone >= totalRows;
-    const hasErrors = newError > 0;
+    const finalVal = isDone ? (newError > 0 ? 'PARTIAL' : 'COMPLETE') : null;
 
     await pool.query(
       `UPDATE import_jobs
          SET rows_total   = $1,
              rows_success = $2,
              rows_error   = $3,
-             status_enum  = CASE
-                              WHEN $4 THEN
-                                CASE WHEN $5 THEN 'PARTIAL'
-                                     ELSE 'COMPLETE'
-                                END
-                              ELSE status_enum
-                            END,
+             status_enum  = CASE WHEN $4 THEN $5::import_status ELSE status_enum END,
              completed_at = CASE WHEN $4 THEN NOW() ELSE completed_at END
        WHERE id = $6`,
-      [totalRows, newSuccess, newError, isDone, hasErrors, jobId]
+      [totalRows, newSuccess, newError, isDone, finalVal, jobId]
     );
 
     res.json({
@@ -263,7 +257,7 @@ router.get('/:branchId/stock', requireBranchAuth, async (req, res) => {
        ORDER BY p.brand_name, p.name, v.size, v.colour`,
       [branchId]
     );
-    res.json(rows);
+  res.json(rows);
   } catch {
     res.status(500).json({ message: 'Server error' });
   }
