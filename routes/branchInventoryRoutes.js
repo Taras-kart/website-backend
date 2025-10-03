@@ -209,8 +209,8 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
              rows_error   = $3,
              status_enum  = CASE
                               WHEN $4 THEN
-                                CASE WHEN $5 THEN 'PARTIAL'::status_enum
-                                     ELSE 'COMPLETE'::status_enum
+                                CASE WHEN $5 THEN 'PARTIAL'
+                                     ELSE 'COMPLETE'
                                 END
                               ELSE status_enum
                             END,
