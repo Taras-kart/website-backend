@@ -12,9 +12,14 @@ router.post('/login', async (req, res) => {
   const { username, password } = req.body || {};
   if (!username || !password) return res.status(400).json({ message: 'username and password required' });
   try {
-    const { rows } = await pool.query('SELECT * FROM users WHERE username = $1 AND is_active IS NOT FALSE', [username]);
+    const { rows } = await pool.query(
+      'SELECT * FROM users WHERE username = $1 LIMIT 1',
+      [username]
+    );
     if (!rows.length) return res.status(401).json({ message: 'Invalid credentials' });
     const u = rows[0];
+    if (u.is_active === false) return res.status(401).json({ message: 'Invalid credentials' });
+
     let ok = false;
     if (isBcryptHash(u.hashed_pw)) {
       ok = await bcrypt.compare(password, u.hashed_pw);
@@ -22,6 +27,7 @@ router.post('/login', async (req, res) => {
       ok = password === u.hashed_pw;
     }
     if (!ok) return res.status(401).json({ message: 'Invalid credentials' });
+
     await pool.query('UPDATE users SET last_login = NOW() WHERE id = $1', [u.id]);
     const token = sign(u);
     res.json({ token, user: { id: u.id, username: u.username, role: u.role_enum, branch_id: u.branch_id } });
