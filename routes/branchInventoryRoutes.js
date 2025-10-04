@@ -1,3 +1,4 @@
+// routes/branchRoutes.js
 const express = require('express');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
@@ -76,85 +77,6 @@ function requireBranchAuth(req, res, next) {
   } catch {
     return res.status(401).json({ message: 'Unauthorized' });
   }
-}
-
-async function ensureSchema() {
-  const ddl = `
-  CREATE TABLE IF NOT EXISTS products (
-    id SERIAL PRIMARY KEY,
-    name TEXT NOT NULL,
-    brand_name TEXT NOT NULL,
-    pattern_code TEXT,
-    fit_type TEXT,
-    mark_code TEXT,
-    gender TEXT,
-    UNIQUE(name, brand_name, pattern_code, gender)
-  );
-  CREATE TABLE IF NOT EXISTS product_variants (
-    id SERIAL PRIMARY KEY,
-    product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-    size TEXT NOT NULL,
-    colour TEXT NOT NULL,
-    is_active BOOLEAN NOT NULL DEFAULT TRUE,
-    mrp NUMERIC(12,2),
-    sale_price NUMERIC(12,2),
-    cost_price NUMERIC(12,2),
-    UNIQUE(product_id, size, colour)
-  );
-  CREATE TABLE IF NOT EXISTS barcodes (
-    id SERIAL PRIMARY KEY,
-    variant_id INTEGER NOT NULL REFERENCES product_variants(id) ON DELETE CASCADE,
-    ean_code TEXT UNIQUE
-  );
-  CREATE TABLE IF NOT EXISTS branch_variant_stock (
-    branch_id INTEGER NOT NULL,
-    variant_id INTEGER NOT NULL REFERENCES product_variants(id) ON DELETE CASCADE,
-    on_hand INTEGER NOT NULL DEFAULT 0,
-    reserved INTEGER NOT NULL DEFAULT 0,
-    is_active BOOLEAN NOT NULL DEFAULT TRUE,
-    PRIMARY KEY (branch_id, variant_id)
-  );
-  CREATE TABLE IF NOT EXISTS import_jobs (
-    id SERIAL PRIMARY KEY,
-    file_name TEXT NOT NULL,
-    file_url TEXT NOT NULL,
-    uploaded_by INTEGER,
-    status_enum TEXT NOT NULL DEFAULT 'PENDING',
-    rows_total INTEGER NOT NULL DEFAULT 0,
-    rows_success INTEGER NOT NULL DEFAULT 0,
-    rows_error INTEGER NOT NULL DEFAULT 0,
-    uploaded_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    completed_at TIMESTAMP,
-    branch_id INTEGER NOT NULL,
-    gender TEXT
-  );
-  CREATE TABLE IF NOT EXISTS import_rows (
-    id SERIAL PRIMARY KEY,
-    import_job_id INTEGER NOT NULL REFERENCES import_jobs(id) ON DELETE CASCADE,
-    raw_row_json JSONB,
-    status_enum TEXT,
-    error_msg TEXT
-  );
-  CREATE INDEX IF NOT EXISTS idx_products_gender ON products(gender);
-  CREATE INDEX IF NOT EXISTS idx_products_brand ON products(brand_name);
-  CREATE INDEX IF NOT EXISTS idx_variants_product ON product_variants(product_id);
-  CREATE INDEX IF NOT EXISTS idx_bvs_branch ON branch_variant_stock(branch_id);
-  `;
-  await pool.query(ddl);
-}
-
-async function ensureProductKeys() {
-  const sql = `
-    CREATE UNIQUE INDEX IF NOT EXISTS products_name_brand_pattern_gender_uniq
-      ON public.products (name, brand_name, pattern_code, gender);
-    CREATE UNIQUE INDEX IF NOT EXISTS product_variants_product_size_colour_uniq
-      ON public.product_variants (product_id, size, colour);
-    CREATE UNIQUE INDEX IF NOT EXISTS barcodes_ean_code_uniq
-      ON public.barcodes (ean_code);
-    CREATE UNIQUE INDEX IF NOT EXISTS branch_variant_stock_branch_variant_uniq
-      ON public.branch_variant_stock (branch_id, variant_id);
-  `;
-  await pool.query(sql);
 }
 
 router.get('/:branchId/import-jobs', requireBranchAuth, async (req, res) => {
@@ -246,7 +168,6 @@ router.post('/:branchId/import', requireBranchAuth, upload.single('file'), async
     process.env.VERCEL_BLOB_RW_TOKEN;
   if (!token) return res.status(500).json({ message: 'Upload store not configured' });
   try {
-    await ensureSchema();
     const ext = (req.file.originalname.split('.').pop() || 'xlsx').toLowerCase();
     const name = `${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
     const stored = await put(name, req.file.buffer, { access: 'public', contentType: req.file.mimetype, token });
@@ -269,8 +190,6 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
   const limit = Math.max(1, Math.min(500, parseInt(req.query.limit || '200', 10)));
   if (!branchId || branchId !== Number(req.user.branch_id)) return res.status(403).json({ message: 'Forbidden' });
   try {
-    await ensureSchema();
-    await ensureProductKeys();
     const j = await pool.query(
       `SELECT id, file_url, status_enum, rows_total, rows_success, rows_error, gender
        FROM import_jobs WHERE id = $1 AND branch_id = $2`,
@@ -330,9 +249,8 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
           const pRes = await client.query(
             `INSERT INTO products (name, brand_name, pattern_code, fit_type, mark_code, gender)
              VALUES ($1, $2, $3, $4, $5, $6)
-             ON CONFLICT (name, brand_name, pattern_code, gender)
-             DO UPDATE SET fit_type = EXCLUDED.fit_type,
-                           mark_code = EXCLUDED.mark_code
+             ON CONFLICT (name, brand_name, pattern_code)
+             DO UPDATE SET fit_type = EXCLUDED.fit_type, mark_code = EXCLUDED.mark_code, gender = EXCLUDED.gender
              RETURNING id`,
             [ProductName, BrandName, PATTERN, FITT, MarkCode, gender || null]
           );
@@ -341,10 +259,7 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
             `INSERT INTO product_variants (product_id, size, colour, is_active, mrp, sale_price, cost_price)
              VALUES ($1, $2, $3, TRUE, $4, $5, $6)
              ON CONFLICT (product_id, size, colour)
-             DO UPDATE SET is_active = TRUE,
-                           mrp = EXCLUDED.mrp,
-                           sale_price = EXCLUDED.sale_price,
-                           cost_price = EXCLUDED.cost_price
+             DO UPDATE SET is_active = TRUE, mrp = EXCLUDED.mrp, sale_price = EXCLUDED.sale_price, cost_price = EXCLUDED.cost_price
              RETURNING id`,
             [productId, SIZE, COLOUR, MRP, RSalePrice, CostPrice]
           );
@@ -361,8 +276,7 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
             `INSERT INTO branch_variant_stock (branch_id, variant_id, on_hand, reserved, is_active)
              VALUES ($1, $2, $3, 0, TRUE)
              ON CONFLICT (branch_id, variant_id)
-             DO UPDATE SET on_hand = branch_variant_stock.on_hand + EXCLUDED.on_hand,
-                           is_active = TRUE`,
+             DO UPDATE SET on_hand = branch_variant_stock.on_hand + EXCLUDED.on_hand, is_active = TRUE`,
             [branchId, variantId, PurchaseQty]
           );
           await client.query(
@@ -403,10 +317,7 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
        WHERE id = $5`,
       [totalRows, newSuccess, newError, finalStatus, jobId]
     );
-    const error_counts = Array.from(errMap.entries())
-      .map(([message, count]) => ({ message, count }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 10);
+    const error_counts = Array.from(errMap.entries()).map(([message, count]) => ({ message, count })).sort((a, b) => b.count - a.count).slice(0, 10);
     res.json({
       done: isDone,
       processed: slice.length,
@@ -427,7 +338,6 @@ router.get('/:branchId/stock', requireBranchAuth, async (req, res) => {
   if (!branchId || branchId !== Number(req.user.branch_id)) return res.status(403).json({ message: 'Forbidden' });
   const gender = normGender(req.query.gender || '');
   try {
-    await ensureSchema();
     const params = [branchId];
     let where = `bvs.branch_id = $1 AND bvs.is_active = TRUE`;
     if (gender) {
