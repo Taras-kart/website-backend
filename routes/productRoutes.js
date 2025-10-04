@@ -3,88 +3,76 @@ const express = require('express');
 const pool = require('../db');
 const router = express.Router();
 
-const isMissing = (v) => v === undefined || v === null || (typeof v === 'string' && v.trim() === '');
-const num = (v) => {
-  const n = typeof v === 'number' ? v : parseFloat(String(v).trim());
-  return Number.isFinite(n) ? n : NaN;
+const toGender = (v) => {
+  const s = String(v || '').trim().toUpperCase();
+  if (s === 'MEN' || s === 'WOMEN' || s === 'KIDS') return s;
+  if (s === 'MAN' || s === 'MALE') return 'MEN';
+  if (s === 'WOMAN' || s === 'FEMALE' || s === 'LADIES') return 'WOMEN';
+  if (s === 'CHILD' || s === 'CHILDREN' || s === 'BOYS' || s === 'GIRLS') return 'KIDS';
+  return '';
 };
 
-router.post('/', async (req, res) => {
-  const {
-    category,
-    brand,
-    product_name,
-    color,
-    size,
-    original_price_b2b,
-    discount_b2b,
-    final_price_b2b,
-    original_price_b2c,
-    discount_b2c,
-    final_price_b2c,
-    total_count,
-    image_url
-  } = req.body;
-
-  if (
-    isMissing(category) ||
-    isMissing(brand) ||
-    isMissing(product_name) ||
-    isMissing(color) ||
-    isMissing(size) ||
-    Number.isNaN(num(original_price_b2b)) ||
-    Number.isNaN(num(discount_b2b)) ||
-    Number.isNaN(num(final_price_b2b)) ||
-    Number.isNaN(num(original_price_b2c)) ||
-    Number.isNaN(num(discount_b2c)) ||
-    Number.isNaN(num(final_price_b2c)) ||
-    Number.isNaN(parseInt(total_count, 10)) ||
-    isMissing(image_url)
-  ) {
-    return res.status(400).json({ message: 'Missing or invalid product fields' });
-  }
-
-  try {
-    const result = await pool.query(
-      `INSERT INTO tarasproducts (
-        category, brand, product_name, color, size,
-        original_price_b2b, discount_b2b, final_price_b2b,
-        original_price_b2c, discount_b2c, final_price_b2c,
-        total_count, image_url
-      )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-      RETURNING *`,
-      [
-        category.trim(),
-        brand.trim(),
-        product_name.trim(),
-        color.trim(),
-        size.trim(),
-        num(original_price_b2b),
-        num(discount_b2b),
-        num(final_price_b2b),
-        num(original_price_b2c),
-        num(discount_b2c),
-        num(final_price_b2c),
-        Math.max(0, parseInt(total_count, 10)),
-        image_url
-      ]
-    );
-    res.status(201).json(result.rows[0]);
-  } catch (err) {
-    res.status(500).json({ message: 'Server error', error: err.message });
-  }
-});
+const defaultImgForGender = (g) => {
+  if (g === 'WOMEN') return '/images/women/women20.jpeg';
+  if (g === 'MEN') return '/images/men/default.jpg';
+  if (g === 'KIDS') return '/images/kids/default.jpg';
+  return '/images/placeholder.jpg';
+};
 
 router.get('/', async (req, res) => {
   try {
-    const { category } = req.query;
-    if (category) {
-      const result = await pool.query('SELECT * FROM tarasproducts WHERE category = $1 ORDER BY id DESC', [category]);
-      return res.json(result.rows);
+    const genderQ = toGender(req.query.gender || req.query.category || '');
+    const brand = req.query.brand ? String(req.query.brand).trim() : '';
+    const q = req.query.q ? String(req.query.q).trim() : '';
+    const limit = Math.max(1, Math.min(500, parseInt(req.query.limit || '200', 10)));
+    const offset = Math.max(0, parseInt(req.query.offset || '0', 10));
+
+    const params = [];
+    let where = 'v.is_active = TRUE';
+    if (genderQ) {
+      params.push(genderQ);
+      where += ` AND p.gender = $${params.length}`;
     }
-    const result = await pool.query('SELECT * FROM tarasproducts ORDER BY id DESC');
-    res.json(result.rows);
+    if (brand) {
+      params.push(`%${brand}%`);
+      where += ` AND p.brand_name ILIKE $${params.length}`;
+    }
+    if (q) {
+      params.push(`%${q}%`);
+      where += ` AND (p.name ILIKE $${params.length} OR p.brand_name ILIKE $${params.length} OR v.colour ILIKE $${params.length})`;
+    }
+    params.push(limit, offset);
+
+    const sql = `
+      SELECT
+        v.id AS id,
+        p.id AS product_id,
+        p.name AS product_name,
+        p.brand_name AS brand,
+        p.gender AS gender,
+        v.colour AS color,
+        v.size AS size,
+        v.mrp::numeric AS original_price_b2c,
+        v.sale_price::numeric AS final_price_b2c,
+        v.mrp::numeric AS original_price_b2b,
+        COALESCE(NULLIF(v.cost_price,0), v.sale_price)::numeric AS final_price_b2b,
+        v.mrp::numeric AS mrp,
+        v.sale_price::numeric AS sale_price,
+        COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
+        CASE
+          WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
+          WHEN p.gender = 'MEN'   THEN '/images/men/default.jpg'
+          WHEN p.gender = 'KIDS'  THEN '/images/kids/default.jpg'
+          ELSE '/images/placeholder.jpg'
+        END AS image_url
+      FROM products p
+      JOIN product_variants v ON v.product_id = p.id
+      WHERE ${where}
+      ORDER BY v.id DESC
+      LIMIT $${params.length-1} OFFSET $${params.length}
+    `;
+    const { rows } = await pool.query(sql, params);
+    res.json(rows);
   } catch (err) {
     res.status(500).json({ message: 'Server error', error: err.message });
   }
@@ -92,30 +80,132 @@ router.get('/', async (req, res) => {
 
 router.get('/category/:category', async (req, res) => {
   try {
-    const result = await pool.query('SELECT * FROM tarasproducts WHERE category = $1 ORDER BY id DESC', [req.params.category]);
-    res.json(result.rows);
+    const g = toGender(req.params.category);
+    const params = [];
+    let where = 'v.is_active = TRUE';
+    if (g) {
+      params.push(g);
+      where += ` AND p.gender = $${params.length}`;
+    }
+    const sql = `
+      SELECT
+        v.id AS id,
+        p.id AS product_id,
+        p.name AS product_name,
+        p.brand_name AS brand,
+        p.gender AS gender,
+        v.colour AS color,
+        v.size AS size,
+        v.mrp::numeric AS original_price_b2c,
+        v.sale_price::numeric AS final_price_b2c,
+        v.mrp::numeric AS original_price_b2b,
+        COALESCE(NULLIF(v.cost_price,0), v.sale_price)::numeric AS final_price_b2b,
+        v.mrp::numeric AS mrp,
+        v.sale_price::numeric AS sale_price,
+        COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
+        CASE
+          WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
+          WHEN p.gender = 'MEN'   THEN '/images/men/default.jpg'
+          WHEN p.gender = 'KIDS'  THEN '/images/kids/default.jpg'
+          ELSE '/images/placeholder.jpg'
+        END AS image_url
+      FROM products p
+      JOIN product_variants v ON v.product_id = p.id
+      WHERE ${where}
+      ORDER BY v.id DESC
+    `;
+    const { rows } = await pool.query(sql, params);
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+});
+
+router.get('/gender/:gender', async (req, res) => {
+  try {
+    const g = toGender(req.params.gender);
+    const params = [];
+    let where = 'v.is_active = TRUE';
+    if (g) {
+      params.push(g);
+      where += ` AND p.gender = $${params.length}`;
+    }
+    const sql = `
+      SELECT
+        v.id AS id,
+        p.id AS product_id,
+        p.name AS product_name,
+        p.brand_name AS brand,
+        p.gender AS gender,
+        v.colour AS color,
+        v.size AS size,
+        v.mrp::numeric AS original_price_b2c,
+        v.sale_price::numeric AS final_price_b2c,
+        v.mrp::numeric AS original_price_b2b,
+        COALESCE(NULLIF(v.cost_price,0), v.sale_price)::numeric AS final_price_b2b,
+        v.mrp::numeric AS mrp,
+        v.sale_price::numeric AS sale_price,
+        COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
+        CASE
+          WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
+          WHEN p.gender = 'MEN'   THEN '/images/men/default.jpg'
+          WHEN p.gender = 'KIDS'  THEN '/images/kids/default.jpg'
+          ELSE '/images/placeholder.jpg'
+        END AS image_url
+      FROM products p
+      JOIN product_variants v ON v.product_id = p.id
+      WHERE ${where}
+      ORDER BY v.id DESC
+    `;
+    const { rows } = await pool.query(sql, params);
+    res.json(rows);
   } catch (err) {
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 });
 
 router.get('/search', async (req, res) => {
-  const query = req.query.q || req.query.query;
-  if (!query || !String(query).trim()) {
-    return res.status(400).json({ message: 'Search query is required' });
-  }
   try {
-    const searchTerm = `%${String(query).trim()}%`;
-    const result = await pool.query(
-      `SELECT * FROM tarasproducts
-       WHERE TRIM(product_name) ILIKE $1
-          OR TRIM(category) ILIKE $1
-          OR TRIM(brand) ILIKE $1
-          OR TRIM(color) ILIKE $1
-       ORDER BY id DESC`,
-      [searchTerm]
+    const query = req.query.q || req.query.query;
+    if (!query || !String(query).trim()) {
+      return res.status(400).json({ message: 'Search query is required' });
+    }
+    const term = `%${String(query).trim()}%`;
+    const { rows } = await pool.query(
+      `SELECT
+         v.id AS id,
+         p.id AS product_id,
+         p.name AS product_name,
+         p.brand_name AS brand,
+         p.gender AS gender,
+         v.colour AS color,
+         v.size AS size,
+         v.mrp::numeric AS original_price_b2c,
+         v.sale_price::numeric AS final_price_b2c,
+         v.mrp::numeric AS original_price_b2b,
+         COALESCE(NULLIF(v.cost_price,0), v.sale_price)::numeric AS final_price_b2b,
+         v.mrp::numeric AS mrp,
+         v.sale_price::numeric AS sale_price,
+         COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
+         CASE
+           WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
+           WHEN p.gender = 'MEN'   THEN '/images/men/default.jpg'
+           WHEN p.gender = 'KIDS'  THEN '/images/kids/default.jpg'
+           ELSE '/images/placeholder.jpg'
+         END AS image_url
+       FROM products p
+       JOIN product_variants v ON v.product_id = p.id
+       WHERE v.is_active = TRUE
+         AND (
+           p.name ILIKE $1
+           OR p.brand_name ILIKE $1
+           OR v.colour ILIKE $1
+           OR p.gender ILIKE $1
+         )
+       ORDER BY v.id DESC`,
+      [term]
     );
-    res.json(result.rows);
+    res.json(rows);
   } catch (err) {
     res.status(500).json({ message: 'Error searching products', error: err.message });
   }
@@ -123,98 +213,35 @@ router.get('/search', async (req, res) => {
 
 router.get('/:id(\\d+)', async (req, res) => {
   try {
-    const { rows } = await pool.query('SELECT * FROM tarasproducts WHERE id = $1', [req.params.id]);
+    const { rows } = await pool.query(
+      `SELECT
+         v.id AS id,
+         p.id AS product_id,
+         p.name AS product_name,
+         p.brand_name AS brand,
+         p.gender AS gender,
+         v.colour AS color,
+         v.size AS size,
+         v.mrp::numeric AS original_price_b2c,
+         v.sale_price::numeric AS final_price_b2c,
+         v.mrp::numeric AS original_price_b2b,
+         COALESCE(NULLIF(v.cost_price,0), v.sale_price)::numeric AS final_price_b2b,
+         v.mrp::numeric AS mrp,
+         v.sale_price::numeric AS sale_price,
+         COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
+         CASE
+           WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
+           WHEN p.gender = 'MEN'   THEN '/images/men/default.jpg'
+           WHEN p.gender = 'KIDS'  THEN '/images/kids/default.jpg'
+           ELSE '/images/placeholder.jpg'
+         END AS image_url
+       FROM products p
+       JOIN product_variants v ON v.product_id = p.id
+       WHERE v.id = $1`,
+      [req.params.id]
+    );
     if (!rows.length) return res.status(404).json({ message: 'Not found' });
     res.json(rows[0]);
-  } catch (err) {
-    res.status(500).json({ message: 'Server error', error: err.message });
-  }
-});
-
-router.put('/:id(\\d+)', async (req, res) => {
-  const {
-    category,
-    brand,
-    product_name,
-    color,
-    size,
-    original_price_b2b,
-    discount_b2b,
-    final_price_b2b,
-    original_price_b2c,
-    discount_b2c,
-    final_price_b2c,
-    total_count,
-    image_url
-  } = req.body;
-
-  if (
-    isMissing(category) ||
-    isMissing(brand) ||
-    isMissing(product_name) ||
-    isMissing(color) ||
-    isMissing(size) ||
-    Number.isNaN(num(original_price_b2b)) ||
-    Number.isNaN(num(discount_b2b)) ||
-    Number.isNaN(num(final_price_b2b)) ||
-    Number.isNaN(num(original_price_b2c)) ||
-    Number.isNaN(num(discount_b2c)) ||
-    Number.isNaN(num(final_price_b2c)) ||
-    Number.isNaN(parseInt(total_count, 10)) ||
-    isMissing(image_url)
-  ) {
-    return res.status(400).json({ message: 'Missing or invalid product fields' });
-  }
-
-  try {
-    const params = [
-      category.trim(),
-      brand.trim(),
-      product_name.trim(),
-      color.trim(),
-      size.trim(),
-      num(original_price_b2b),
-      num(discount_b2b),
-      num(final_price_b2b),
-      num(original_price_b2c),
-      num(discount_b2c),
-      num(final_price_b2c),
-      Math.max(0, parseInt(total_count, 10)),
-      image_url,
-      req.params.id
-    ];
-
-    const sql = `
-      UPDATE tarasproducts
-      SET category = $1,
-          brand = $2,
-          product_name = $3,
-          color = $4,
-          size = $5,
-          original_price_b2b = $6,
-          discount_b2b = $7,
-          final_price_b2b = $8,
-          original_price_b2c = $9,
-          discount_b2c = $10,
-          final_price_b2c = $11,
-          total_count = $12,
-          image_url = $13
-      WHERE id = $14
-      RETURNING *`;
-
-    const { rows } = await pool.query(sql, params);
-    if (!rows.length) return res.status(404).json({ message: 'Not found' });
-    res.json(rows[0]);
-  } catch (err) {
-    res.status(500).json({ message: 'Server error', error: err.message });
-  }
-});
-
-router.delete('/:id(\\d+)', async (req, res) => {
-  try {
-    const { rows } = await pool.query('DELETE FROM tarasproducts WHERE id = $1 RETURNING *', [req.params.id]);
-    if (!rows.length) return res.status(404).json({ message: 'Not found' });
-    res.json({ message: 'Deleted', product: rows[0] });
   } catch (err) {
     res.status(500).json({ message: 'Server error', error: err.message });
   }
