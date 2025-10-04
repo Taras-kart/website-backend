@@ -1,4 +1,3 @@
-// routes/branchRoutes.js
 const express = require('express');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
@@ -249,8 +248,9 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
           const pRes = await client.query(
             `INSERT INTO products (name, brand_name, pattern_code, fit_type, mark_code, gender)
              VALUES ($1, $2, $3, $4, $5, $6)
-             ON CONFLICT (name, brand_name, pattern_code)
-             DO UPDATE SET fit_type = EXCLUDED.fit_type, mark_code = EXCLUDED.mark_code, gender = EXCLUDED.gender
+             ON CONFLICT (name, brand_name, pattern_code, gender)
+             DO UPDATE SET fit_type = EXCLUDED.fit_type,
+                           mark_code = EXCLUDED.mark_code
              RETURNING id`,
             [ProductName, BrandName, PATTERN, FITT, MarkCode, gender || null]
           );
