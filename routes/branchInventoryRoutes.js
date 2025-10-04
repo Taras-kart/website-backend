@@ -78,6 +78,38 @@ function requireBranchAuth(req, res, next) {
   }
 }
 
+async function ensureProductKeys() {
+  const sql = `
+  DO $$
+  DECLARE idx text; con text;
+  BEGIN
+    SELECT indexname INTO idx
+    FROM pg_indexes
+    WHERE schemaname='public' AND tablename='products'
+      AND indexdef ILIKE '%UNIQUE%' AND indexdef ILIKE '(name, brand_name, pattern_code)%';
+    IF idx IS NOT NULL THEN
+      EXECUTE format('DROP INDEX IF EXISTS %I', idx);
+    END IF;
+    SELECT conname INTO con
+    FROM pg_constraint
+    WHERE conrelid = 'public.products'::regclass
+      AND contype = 'u'
+      AND pg_get_constraintdef(oid) ILIKE '%(name, brand_name, pattern_code)%';
+    IF con IS NOT NULL THEN
+      EXECUTE format('ALTER TABLE public.products DROP CONSTRAINT %I', con);
+    END IF;
+    CREATE UNIQUE INDEX IF NOT EXISTS products_name_brand_pattern_gender_uniq
+      ON public.products (name, brand_name, pattern_code, gender);
+    CREATE UNIQUE INDEX IF NOT EXISTS product_variants_product_size_colour_uniq
+      ON public.product_variants (product_id, size, colour);
+    CREATE UNIQUE INDEX IF NOT EXISTS barcodes_ean_code_uniq
+      ON public.barcodes (ean_code);
+    CREATE UNIQUE INDEX IF NOT EXISTS branch_variant_stock_branch_variant_uniq
+      ON public.branch_variant_stock (branch_id, variant_id);
+  END$$;`;
+  await pool.query(sql);
+}
+
 router.get('/:branchId/import-jobs', requireBranchAuth, async (req, res) => {
   const branchId = parseInt(req.params.branchId, 10);
   if (!branchId || branchId !== Number(req.user.branch_id)) return res.status(403).json({ message: 'Forbidden' });
@@ -189,6 +221,7 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
   const limit = Math.max(1, Math.min(500, parseInt(req.query.limit || '200', 10)));
   if (!branchId || branchId !== Number(req.user.branch_id)) return res.status(403).json({ message: 'Forbidden' });
   try {
+    await ensureProductKeys();
     const j = await pool.query(
       `SELECT id, file_url, status_enum, rows_total, rows_success, rows_error, gender
        FROM import_jobs WHERE id = $1 AND branch_id = $2`,
@@ -245,7 +278,6 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
         }
         try {
           await client.query('BEGIN');
-
           const pRes = await client.query(
             `INSERT INTO products (name, brand_name, pattern_code, fit_type, mark_code, gender)
              VALUES ($1, $2, $3, $4, $5, $6)
@@ -256,7 +288,6 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
             [ProductName, BrandName, PATTERN, FITT, MarkCode, gender || null]
           );
           const productId = pRes.rows[0].id;
-
           const vRes = await client.query(
             `INSERT INTO product_variants (product_id, size, colour, is_active, mrp, sale_price, cost_price)
              VALUES ($1, $2, $3, TRUE, $4, $5, $6)
@@ -269,7 +300,6 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
             [productId, SIZE, COLOUR, MRP, RSalePrice, CostPrice]
           );
           const variantId = vRes.rows[0].id;
-
           if (EANCode) {
             await client.query(
               `INSERT INTO barcodes (variant_id, ean_code)
@@ -278,7 +308,6 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
               [variantId, EANCode]
             );
           }
-
           await client.query(
             `INSERT INTO branch_variant_stock (branch_id, variant_id, on_hand, reserved, is_active)
              VALUES ($1, $2, $3, 0, TRUE)
@@ -287,13 +316,11 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
                            is_active = TRUE`,
             [branchId, variantId, PurchaseQty]
           );
-
           await client.query(
             `INSERT INTO import_rows (import_job_id, raw_row_json, status_enum, error_msg)
              VALUES ($1, $2::jsonb, $3, $4)`,
             [jobId, JSON.stringify(raw), 'OK', null]
           );
-
           await client.query('COMMIT');
           ok++;
         } catch (e) {
@@ -312,13 +339,11 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
     } finally {
       client.release();
     }
-
     const newSuccess = (job.rows_success || 0) + ok;
     const newError = (job.rows_error || 0) + err;
     const rowsDone = start + slice.length;
     const isDone = rowsDone >= totalRows;
     const finalStatus = isDone ? (newError > 0 ? 'PARTIAL' : 'COMPLETE') : 'PENDING';
-
     await pool.query(
       `UPDATE import_jobs
          SET rows_total   = $1,
@@ -329,12 +354,10 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
        WHERE id = $5`,
       [totalRows, newSuccess, newError, finalStatus, jobId]
     );
-
     const error_counts = Array.from(errMap.entries())
       .map(([message, count]) => ({ message, count }))
       .sort((a, b) => b.count - a.count)
       .slice(0, 10);
-
     res.json({
       done: isDone,
       processed: slice.length,
