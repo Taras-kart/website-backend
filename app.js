@@ -4,16 +4,28 @@ const cors = require('cors');
 
 const app = express();
 
-const allowedOrigins = process.env.CORS_ORIGINS ? process.env.CORS_ORIGINS.split(',') : ['http://localhost:3000'];
+const defaultOrigins = [
+  'http://localhost:3000',
+  'http://localhost:3001',
+  'http://127.0.0.1:3000',
+  'http://127.0.0.1:3001'
+];
+const envOrigins = (process.env.CORS_ORIGINS || '')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
+const allowedOrigins = envOrigins.length ? envOrigins : defaultOrigins;
+
 const corsOptions = {
   origin: function (origin, cb) {
     if (!origin) return cb(null, true);
+    if (allowedOrigins.includes('*')) return cb(null, true);
     if (allowedOrigins.includes(origin)) return cb(null, true);
     return cb(null, false);
   },
   methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE'],
-  allowedHeaders: ['content-type', 'authorization'],
-  credentials: false
+  allowedHeaders: ['authorization', 'content-type'],
+  credentials: true
 };
 
 app.use(cors(corsOptions));
@@ -40,8 +52,6 @@ app.use('/api/sales', require('./routes/salesRoutes'));
 app.get('/', (req, res) => res.status(200).send('Taras Kart API'));
 app.get('/healthz', (req, res) => res.status(200).send('ok'));
 
-app.use((req, res) => res.status(404).send('Not found'));
-
 app.get('/api/debug/blob-env', (req, res) => {
   res.json({
     hasToken: Boolean(
@@ -51,5 +61,7 @@ app.get('/api/debug/blob-env', (req, res) => {
     )
   });
 });
+
+app.use((req, res) => res.status(404).send('Not found'));
 
 module.exports = app;
