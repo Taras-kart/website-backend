@@ -59,6 +59,12 @@ function toIntOrZero(v) {
   return Number.isFinite(n) ? n : 0;
 }
 
+function normAudience(v) {
+  const s = String(v || '').trim().toUpperCase();
+  if (s === 'MEN' || s === 'WOMEN' || s === 'KIDS') return s;
+  return '';
+}
+
 function requireBranchAuth(req, res, next) {
   const hdr = req.headers.authorization || '';
   const token = hdr.startsWith('Bearer ') ? hdr.slice(7) : '';
@@ -77,7 +83,7 @@ router.get('/:branchId/import-jobs', requireBranchAuth, async (req, res) => {
   if (!branchId || branchId !== Number(req.user.branch_id)) return res.status(403).json({ message: 'Forbidden' });
   try {
     const { rows } = await pool.query(
-      `SELECT id, file_name, file_url, uploaded_by, status_enum, rows_total, rows_success, rows_error, uploaded_at, completed_at, branch_id
+      `SELECT id, file_name, file_url, uploaded_by, status_enum, rows_total, rows_success, rows_error, uploaded_at, completed_at, branch_id, audience
        FROM import_jobs
        WHERE branch_id = $1
        ORDER BY id DESC
@@ -137,7 +143,8 @@ router.get('/:branchId/import-rows', requireBranchAuth, async (req, res) => {
         rows_success: job.rows_success,
         rows_error: job.rows_error,
         uploaded_at: job.uploaded_at,
-        completed_at: job.completed_at
+        completed_at: job.completed_at,
+        audience: job.audience
       },
       rows: rowsQ.rows,
       nextOffset,
@@ -152,6 +159,8 @@ router.post('/:branchId/import', requireBranchAuth, upload.single('file'), async
   const branchId = parseInt(req.params.branchId, 10);
   if (!branchId || branchId !== Number(req.user.branch_id)) return res.status(403).json({ message: 'Forbidden' });
   if (!req.file) return res.status(400).json({ message: 'File required' });
+  const audience = normAudience(req.body?.audience);
+  if (!audience) return res.status(400).json({ message: 'Category is required (MEN/WOMEN/KIDS)' });
   const token =
     process.env.BLOB_READ_WRITE_TOKEN ||
     process.env.VERCEL_BLOB_READ_WRITE_TOKEN ||
@@ -162,10 +171,10 @@ router.post('/:branchId/import', requireBranchAuth, upload.single('file'), async
     const name = `${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
     const stored = await put(name, req.file.buffer, { access: 'public', contentType: req.file.mimetype, token });
     const { rows } = await pool.query(
-      `INSERT INTO import_jobs (file_name, file_url, uploaded_by, status_enum, rows_total, rows_success, rows_error, branch_id)
-       VALUES ($1, $2, $3, 'PENDING', 0, 0, 0, $4)
-       RETURNING id, file_name, file_url, uploaded_by, status_enum, rows_total, rows_success, rows_error, uploaded_at, completed_at, branch_id`,
-      [req.file.originalname || name, stored.url, req.user.id, branchId]
+      `INSERT INTO import_jobs (file_name, file_url, uploaded_by, status_enum, rows_total, rows_success, rows_error, branch_id, audience)
+       VALUES ($1, $2, $3, 'PENDING', 0, 0, 0, $4, $5)
+       RETURNING id, file_name, file_url, uploaded_by, status_enum, rows_total, rows_success, rows_error, uploaded_at, completed_at, branch_id, audience`,
+      [req.file.originalname || name, stored.url, req.user.id, branchId, audience]
     );
     res.status(201).json(rows[0]);
   } catch {
@@ -181,7 +190,7 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
   if (!branchId || branchId !== Number(req.user.branch_id)) return res.status(403).json({ message: 'Forbidden' });
   try {
     const j = await pool.query(
-      `SELECT id, file_url, status_enum, rows_total, rows_success, rows_error
+      `SELECT id, file_url, status_enum, rows_total, rows_success, rows_error, audience
        FROM import_jobs WHERE id = $1 AND branch_id = $2`,
       [jobId, branchId]
     );
@@ -192,6 +201,7 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
     if (st === 'COMPLETE' || st === 'PARTIAL') {
       return res.json({ done: true, processed: 0, nextStart: start, ok: 0, err: 0, totalRows: job.rows_total || 0 });
     }
+    const audience = normAudience(job.audience);
     const resp = await axios.get(job.file_url, { responseType: 'arraybuffer' });
     const buf = Buffer.from(resp.data);
     const wb = XLSX.read(buf, { type: 'buffer' });
@@ -236,12 +246,12 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
         try {
           await client.query('BEGIN');
           const pRes = await client.query(
-            `INSERT INTO products (name, brand_name, pattern_code, fit_type, mark_code)
-             VALUES ($1, $2, $3, $4, $5)
+            `INSERT INTO products (name, brand_name, pattern_code, fit_type, mark_code, audience)
+             VALUES ($1, $2, $3, $4, $5, $6)
              ON CONFLICT (name, brand_name, pattern_code)
-             DO UPDATE SET fit_type = EXCLUDED.fit_type, mark_code = EXCLUDED.mark_code
+             DO UPDATE SET fit_type = EXCLUDED.fit_type, mark_code = EXCLUDED.mark_code, audience = EXCLUDED.audience
              RETURNING id`,
-            [ProductName, BrandName, PATTERN, FITT, MarkCode]
+            [ProductName, BrandName, PATTERN, FITT, MarkCode, audience || null]
           );
           const productId = pRes.rows[0].id;
           const vRes = await client.query(
@@ -325,7 +335,14 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
 router.get('/:branchId/stock', requireBranchAuth, async (req, res) => {
   const branchId = parseInt(req.params.branchId, 10);
   if (!branchId || branchId !== Number(req.user.branch_id)) return res.status(403).json({ message: 'Forbidden' });
+  const audience = normAudience(req.query.audience || '');
   try {
+    const params = [branchId];
+    let where = `bvs.branch_id = $1 AND bvs.is_active = TRUE`;
+    if (audience) {
+      params.push(audience);
+      where += ` AND p.audience = $${params.length}`;
+    }
     const { rows } = await pool.query(
       `SELECT
          p.id AS product_id,
@@ -334,6 +351,7 @@ router.get('/:branchId/stock', requireBranchAuth, async (req, res) => {
          p.pattern_code,
          p.fit_type,
          p.mark_code,
+         p.audience,
          v.id AS variant_id,
          v.size,
          v.colour,
@@ -349,9 +367,9 @@ router.get('/:branchId/stock', requireBranchAuth, async (req, res) => {
        LEFT JOIN LATERAL (
          SELECT ean_code FROM barcodes bc WHERE bc.variant_id = v.id ORDER BY id ASC LIMIT 1
        ) bc ON TRUE
-       WHERE bvs.branch_id = $1 AND bvs.is_active = TRUE
+       WHERE ${where}
        ORDER BY p.brand_name, p.name, v.size, v.colour`,
-      [branchId]
+      params
     );
     res.json(rows);
   } catch {
