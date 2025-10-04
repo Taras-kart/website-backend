@@ -1,4 +1,3 @@
-// routes/branchRoutes.js
 const express = require('express');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
@@ -246,24 +245,31 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
         }
         try {
           await client.query('BEGIN');
+
           const pRes = await client.query(
             `INSERT INTO products (name, brand_name, pattern_code, fit_type, mark_code, gender)
              VALUES ($1, $2, $3, $4, $5, $6)
-             ON CONFLICT (name, brand_name, pattern_code)
-             DO UPDATE SET fit_type = EXCLUDED.fit_type, mark_code = EXCLUDED.mark_code, gender = EXCLUDED.gender
+             ON CONFLICT (name, brand_name, pattern_code, gender)
+             DO UPDATE SET fit_type = EXCLUDED.fit_type,
+                           mark_code = EXCLUDED.mark_code
              RETURNING id`,
             [ProductName, BrandName, PATTERN, FITT, MarkCode, gender || null]
           );
           const productId = pRes.rows[0].id;
+
           const vRes = await client.query(
             `INSERT INTO product_variants (product_id, size, colour, is_active, mrp, sale_price, cost_price)
              VALUES ($1, $2, $3, TRUE, $4, $5, $6)
              ON CONFLICT (product_id, size, colour)
-             DO UPDATE SET is_active = TRUE, mrp = EXCLUDED.mrp, sale_price = EXCLUDED.sale_price, cost_price = EXCLUDED.cost_price
+             DO UPDATE SET is_active = TRUE,
+                           mrp = EXCLUDED.mrp,
+                           sale_price = EXCLUDED.sale_price,
+                           cost_price = EXCLUDED.cost_price
              RETURNING id`,
             [productId, SIZE, COLOUR, MRP, RSalePrice, CostPrice]
           );
           const variantId = vRes.rows[0].id;
+
           if (EANCode) {
             await client.query(
               `INSERT INTO barcodes (variant_id, ean_code)
@@ -272,18 +278,22 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
               [variantId, EANCode]
             );
           }
+
           await client.query(
             `INSERT INTO branch_variant_stock (branch_id, variant_id, on_hand, reserved, is_active)
              VALUES ($1, $2, $3, 0, TRUE)
              ON CONFLICT (branch_id, variant_id)
-             DO UPDATE SET on_hand = branch_variant_stock.on_hand + EXCLUDED.on_hand, is_active = TRUE`,
+             DO UPDATE SET on_hand = branch_variant_stock.on_hand + EXCLUDED.on_hand,
+                           is_active = TRUE`,
             [branchId, variantId, PurchaseQty]
           );
+
           await client.query(
             `INSERT INTO import_rows (import_job_id, raw_row_json, status_enum, error_msg)
              VALUES ($1, $2::jsonb, $3, $4)`,
             [jobId, JSON.stringify(raw), 'OK', null]
           );
+
           await client.query('COMMIT');
           ok++;
         } catch (e) {
@@ -302,11 +312,13 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
     } finally {
       client.release();
     }
+
     const newSuccess = (job.rows_success || 0) + ok;
     const newError = (job.rows_error || 0) + err;
     const rowsDone = start + slice.length;
     const isDone = rowsDone >= totalRows;
     const finalStatus = isDone ? (newError > 0 ? 'PARTIAL' : 'COMPLETE') : 'PENDING';
+
     await pool.query(
       `UPDATE import_jobs
          SET rows_total   = $1,
@@ -317,7 +329,12 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
        WHERE id = $5`,
       [totalRows, newSuccess, newError, finalStatus, jobId]
     );
-    const error_counts = Array.from(errMap.entries()).map(([message, count]) => ({ message, count })).sort((a, b) => b.count - a.count).slice(0, 10);
+
+    const error_counts = Array.from(errMap.entries())
+      .map(([message, count]) => ({ message, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 10);
+
     res.json({
       done: isDone,
       processed: slice.length,
