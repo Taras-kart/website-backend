@@ -78,26 +78,73 @@ function requireBranchAuth(req, res, next) {
   }
 }
 
+async function ensureSchema() {
+  const ddl = `
+  CREATE TABLE IF NOT EXISTS products (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    brand_name TEXT NOT NULL,
+    pattern_code TEXT,
+    fit_type TEXT,
+    mark_code TEXT,
+    gender TEXT,
+    UNIQUE(name, brand_name, pattern_code, gender)
+  );
+  CREATE TABLE IF NOT EXISTS product_variants (
+    id SERIAL PRIMARY KEY,
+    product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    size TEXT NOT NULL,
+    colour TEXT NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    mrp NUMERIC(12,2),
+    sale_price NUMERIC(12,2),
+    cost_price NUMERIC(12,2),
+    UNIQUE(product_id, size, colour)
+  );
+  CREATE TABLE IF NOT EXISTS barcodes (
+    id SERIAL PRIMARY KEY,
+    variant_id INTEGER NOT NULL REFERENCES product_variants(id) ON DELETE CASCADE,
+    ean_code TEXT UNIQUE
+  );
+  CREATE TABLE IF NOT EXISTS branch_variant_stock (
+    branch_id INTEGER NOT NULL,
+    variant_id INTEGER NOT NULL REFERENCES product_variants(id) ON DELETE CASCADE,
+    on_hand INTEGER NOT NULL DEFAULT 0,
+    reserved INTEGER NOT NULL DEFAULT 0,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    PRIMARY KEY (branch_id, variant_id)
+  );
+  CREATE TABLE IF NOT EXISTS import_jobs (
+    id SERIAL PRIMARY KEY,
+    file_name TEXT NOT NULL,
+    file_url TEXT NOT NULL,
+    uploaded_by INTEGER,
+    status_enum TEXT NOT NULL DEFAULT 'PENDING',
+    rows_total INTEGER NOT NULL DEFAULT 0,
+    rows_success INTEGER NOT NULL DEFAULT 0,
+    rows_error INTEGER NOT NULL DEFAULT 0,
+    uploaded_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    completed_at TIMESTAMP,
+    branch_id INTEGER NOT NULL,
+    gender TEXT
+  );
+  CREATE TABLE IF NOT EXISTS import_rows (
+    id SERIAL PRIMARY KEY,
+    import_job_id INTEGER NOT NULL REFERENCES import_jobs(id) ON DELETE CASCADE,
+    raw_row_json JSONB,
+    status_enum TEXT,
+    error_msg TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_products_gender ON products(gender);
+  CREATE INDEX IF NOT EXISTS idx_products_brand ON products(brand_name);
+  CREATE INDEX IF NOT EXISTS idx_variants_product ON product_variants(product_id);
+  CREATE INDEX IF NOT EXISTS idx_bvs_branch ON branch_variant_stock(branch_id);
+  `;
+  await pool.query(ddl);
+}
+
 async function ensureProductKeys() {
   const sql = `
-  DO $$
-  DECLARE idx text; con text;
-  BEGIN
-    SELECT indexname INTO idx
-    FROM pg_indexes
-    WHERE schemaname='public' AND tablename='products'
-      AND indexdef ILIKE '%UNIQUE%' AND indexdef ILIKE '(name, brand_name, pattern_code)%';
-    IF idx IS NOT NULL THEN
-      EXECUTE format('DROP INDEX IF EXISTS %I', idx);
-    END IF;
-    SELECT conname INTO con
-    FROM pg_constraint
-    WHERE conrelid = 'public.products'::regclass
-      AND contype = 'u'
-      AND pg_get_constraintdef(oid) ILIKE '%(name, brand_name, pattern_code)%';
-    IF con IS NOT NULL THEN
-      EXECUTE format('ALTER TABLE public.products DROP CONSTRAINT %I', con);
-    END IF;
     CREATE UNIQUE INDEX IF NOT EXISTS products_name_brand_pattern_gender_uniq
       ON public.products (name, brand_name, pattern_code, gender);
     CREATE UNIQUE INDEX IF NOT EXISTS product_variants_product_size_colour_uniq
@@ -106,7 +153,7 @@ async function ensureProductKeys() {
       ON public.barcodes (ean_code);
     CREATE UNIQUE INDEX IF NOT EXISTS branch_variant_stock_branch_variant_uniq
       ON public.branch_variant_stock (branch_id, variant_id);
-  END$$;`;
+  `;
   await pool.query(sql);
 }
 
@@ -199,6 +246,7 @@ router.post('/:branchId/import', requireBranchAuth, upload.single('file'), async
     process.env.VERCEL_BLOB_RW_TOKEN;
   if (!token) return res.status(500).json({ message: 'Upload store not configured' });
   try {
+    await ensureSchema();
     const ext = (req.file.originalname.split('.').pop() || 'xlsx').toLowerCase();
     const name = `${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
     const stored = await put(name, req.file.buffer, { access: 'public', contentType: req.file.mimetype, token });
@@ -221,6 +269,7 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
   const limit = Math.max(1, Math.min(500, parseInt(req.query.limit || '200', 10)));
   if (!branchId || branchId !== Number(req.user.branch_id)) return res.status(403).json({ message: 'Forbidden' });
   try {
+    await ensureSchema();
     await ensureProductKeys();
     const j = await pool.query(
       `SELECT id, file_url, status_enum, rows_total, rows_success, rows_error, gender
@@ -378,6 +427,7 @@ router.get('/:branchId/stock', requireBranchAuth, async (req, res) => {
   if (!branchId || branchId !== Number(req.user.branch_id)) return res.status(403).json({ message: 'Forbidden' });
   const gender = normGender(req.query.gender || '');
   try {
+    await ensureSchema();
     const params = [branchId];
     let where = `bvs.branch_id = $1 AND bvs.is_active = TRUE`;
     if (gender) {
