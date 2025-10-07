@@ -11,11 +11,10 @@ const toGender = (v) => {
   return '';
 };
 
-function buildListSQL(where, cloudIdx, withLimitOffset) {
+function buildListSQL(where, cloudIdx, lim) {
   const eanExpr = `
     COALESCE(
       NULLIF(bc_var.ean_code, ''),
-      NULLIF(v.ean_code, ''),
       NULLIF(p.ean_code, '')
     )
   `;
@@ -52,14 +51,16 @@ function buildListSQL(where, cloudIdx, withLimitOffset) {
     FROM products p
     JOIN product_variants v ON v.product_id = p.id
     LEFT JOIN LATERAL (
-      SELECT ean_code FROM barcodes b WHERE b.variant_id = v.id AND COALESCE(b.ean_code,'') <> '' ORDER BY id ASC LIMIT 1
+      SELECT ean_code
+      FROM barcodes b
+      WHERE b.variant_id = v.id AND COALESCE(b.ean_code,'') <> ''
+      ORDER BY id ASC
+      LIMIT 1
     ) bc_var ON TRUE
     WHERE ${where}
     ORDER BY v.id DESC
   `;
-  if (withLimitOffset) {
-    return `${base} LIMIT $${withLimitOffset.limitIdx} OFFSET $${withLimitOffset.offsetIdx}`;
-  }
+  if (lim) return `${base} LIMIT $${lim.limitIdx} OFFSET $${lim.offsetIdx}`;
   return base;
 }
 
@@ -96,6 +97,7 @@ router.get('/', async (req, res) => {
 
     const sql = buildListSQL(where, cloudIdx, { limitIdx: limIdx, offsetIdx: offIdx });
     const { rows } = await pool.query(sql, params);
+    res.set('Cache-Control', 'no-store');
     res.json(rows);
   } catch (err) {
     res.status(500).json({ message: 'Server error', error: err.message });
@@ -117,6 +119,7 @@ router.get('/category/:category', async (req, res) => {
 
     const sql = buildListSQL(where, cloudIdx);
     const { rows } = await pool.query(sql, params);
+    res.set('Cache-Control', 'no-store');
     res.json(rows);
   } catch (err) {
     res.status(500).json({ message: 'Server error', error: err.message });
@@ -138,6 +141,7 @@ router.get('/gender/:gender', async (req, res) => {
 
     const sql = buildListSQL(where, cloudIdx);
     const { rows } = await pool.query(sql, params);
+    res.set('Cache-Control', 'no-store');
     res.json(rows);
   } catch (err) {
     res.status(500).json({ message: 'Server error', error: err.message });
@@ -166,6 +170,7 @@ router.get('/search', async (req, res) => {
     `;
     const sql = buildListSQL(where, cloudIdx);
     const { rows } = await pool.query(sql, params);
+    res.set('Cache-Control', 'no-store');
     res.json(rows);
   } catch (err) {
     res.status(500).json({ message: 'Error searching products', error: err.message });
@@ -181,6 +186,7 @@ router.get('/:id(\\d+)', async (req, res) => {
     const sql = buildListSQL(where, cloudIdx);
     const { rows } = await pool.query(sql, params);
     if (!rows.length) return res.status(404).json({ message: 'Not found' });
+    res.set('Cache-Control', 'no-store');
     res.json(rows[0]);
   } catch (err) {
     res.status(500).json({ message: 'Server error', error: err.message });
