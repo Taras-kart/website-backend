@@ -11,22 +11,8 @@ const toGender = (v) => {
   return '';
 };
 
-let ensured = false;
-async function ensureProductImagesTable() {
-  if (ensured) return;
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS product_images (
-      ean_code text PRIMARY KEY,
-      image_url text NOT NULL,
-      uploaded_at timestamptz DEFAULT now()
-    )
-  `);
-  ensured = true;
-}
-
 router.get('/', async (req, res) => {
   try {
-    await ensureProductImagesTable();
     const genderQ = toGender(req.query.gender || req.query.category || '');
     const brand = req.query.brand ? String(req.query.brand).trim() : '';
     const q = req.query.q ? String(req.query.q).trim() : '';
@@ -66,21 +52,17 @@ router.get('/', async (req, res) => {
         v.sale_price::numeric AS sale_price,
         COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
         COALESCE(bc.ean_code,'') AS ean_code,
-        COALESCE(
-          pi.image_url,
-          CASE
-            WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
-            WHEN p.gender = 'MEN'   THEN '/images/men/default.jpg'
-            WHEN p.gender = 'KIDS'  THEN '/images/kids/default.jpg'
-            ELSE '/images/placeholder.jpg'
-          END
-        ) AS image_url
+        CASE
+          WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
+          WHEN p.gender = 'MEN'   THEN '/images/men/default.jpg'
+          WHEN p.gender = 'KIDS'  THEN '/images/kids/default.jpg'
+          ELSE '/images/placeholder.jpg'
+        END AS image_url
       FROM products p
       JOIN product_variants v ON v.product_id = p.id
       LEFT JOIN LATERAL (
         SELECT ean_code FROM barcodes b WHERE b.variant_id = v.id ORDER BY id ASC LIMIT 1
       ) bc ON TRUE
-      LEFT JOIN product_images pi ON pi.ean_code = bc.ean_code
       WHERE ${where}
       ORDER BY v.id DESC
       LIMIT $${params.length-1} OFFSET $${params.length}
@@ -94,7 +76,6 @@ router.get('/', async (req, res) => {
 
 router.get('/category/:category', async (req, res) => {
   try {
-    await ensureProductImagesTable();
     const g = toGender(req.params.category);
     const params = [];
     let where = 'v.is_active = TRUE';
@@ -119,21 +100,17 @@ router.get('/category/:category', async (req, res) => {
         v.sale_price::numeric AS sale_price,
         COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
         COALESCE(bc.ean_code,'') AS ean_code,
-        COALESCE(
-          pi.image_url,
-          CASE
-            WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
-            WHEN p.gender = 'MEN'   THEN '/images/men/default.jpg'
-            WHEN p.gender = 'KIDS'  THEN '/images/kids/default.jpg'
-            ELSE '/images/placeholder.jpg'
-          END
-        ) AS image_url
+        CASE
+          WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
+          WHEN p.gender = 'MEN'   THEN '/images/men/default.jpg'
+          WHEN p.gender = 'KIDS'  THEN '/images/kids/default.jpg'
+          ELSE '/images/placeholder.jpg'
+        END AS image_url
       FROM products p
       JOIN product_variants v ON v.product_id = p.id
       LEFT JOIN LATERAL (
         SELECT ean_code FROM barcodes b WHERE b.variant_id = v.id ORDER BY id ASC LIMIT 1
       ) bc ON TRUE
-      LEFT JOIN product_images pi ON pi.ean_code = bc.ean_code
       WHERE ${where}
       ORDER BY v.id DESC
     `;
@@ -146,7 +123,6 @@ router.get('/category/:category', async (req, res) => {
 
 router.get('/gender/:gender', async (req, res) => {
   try {
-    await ensureProductImagesTable();
     const g = toGender(req.params.gender);
     const params = [];
     let where = 'v.is_active = TRUE';
@@ -171,21 +147,17 @@ router.get('/gender/:gender', async (req, res) => {
         v.sale_price::numeric AS sale_price,
         COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
         COALESCE(bc.ean_code,'') AS ean_code,
-        COALESCE(
-          pi.image_url,
-          CASE
-            WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
-            WHEN p.gender = 'MEN'   THEN '/images/men/default.jpg'
-            WHEN p.gender = 'KIDS'  THEN '/images/kids/default.jpg'
-            ELSE '/images/placeholder.jpg'
-          END
-        ) AS image_url
+        CASE
+          WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
+          WHEN p.gender = 'MEN'   THEN '/images/men/default.jpg'
+          WHEN p.gender = 'KIDS'  THEN '/images/kids/default.jpg'
+          ELSE '/images/placeholder.jpg'
+        END AS image_url
       FROM products p
       JOIN product_variants v ON v.product_id = p.id
       LEFT JOIN LATERAL (
         SELECT ean_code FROM barcodes b WHERE b.variant_id = v.id ORDER BY id ASC LIMIT 1
       ) bc ON TRUE
-      LEFT JOIN product_images pi ON pi.ean_code = bc.ean_code
       WHERE ${where}
       ORDER BY v.id DESC
     `;
@@ -198,7 +170,6 @@ router.get('/gender/:gender', async (req, res) => {
 
 router.get('/search', async (req, res) => {
   try {
-    await ensureProductImagesTable();
     const query = req.query.q || req.query.query;
     if (!query || !String(query).trim()) {
       return res.status(400).json({ message: 'Search query is required' });
@@ -221,21 +192,17 @@ router.get('/search', async (req, res) => {
          v.sale_price::numeric AS sale_price,
          COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
          COALESCE(bc.ean_code,'') AS ean_code,
-         COALESCE(
-           pi.image_url,
-           CASE
-             WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
-             WHEN p.gender = 'MEN'   THEN '/images/men/default.jpg'
-             WHEN p.gender = 'KIDS'  THEN '/images/kids/default.jpg'
-             ELSE '/images/placeholder.jpg'
-           END
-         ) AS image_url
+         CASE
+           WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
+           WHEN p.gender = 'MEN'   THEN '/images/men/default.jpg'
+           WHEN p.gender = 'KIDS'  THEN '/images/kids/default.jpg'
+           ELSE '/images/placeholder.jpg'
+         END AS image_url
        FROM products p
        JOIN product_variants v ON v.product_id = p.id
        LEFT JOIN LATERAL (
          SELECT ean_code FROM barcodes b WHERE b.variant_id = v.id ORDER BY id ASC LIMIT 1
        ) bc ON TRUE
-       LEFT JOIN product_images pi ON pi.ean_code = bc.ean_code
        WHERE v.is_active = TRUE
          AND (
            p.name ILIKE $1
@@ -254,7 +221,6 @@ router.get('/search', async (req, res) => {
 
 router.get('/:id(\\d+)', async (req, res) => {
   try {
-    await ensureProductImagesTable();
     const { rows } = await pool.query(
       `SELECT
          v.id AS id,
@@ -272,21 +238,17 @@ router.get('/:id(\\d+)', async (req, res) => {
          v.sale_price::numeric AS sale_price,
          COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
          COALESCE(bc.ean_code,'') AS ean_code,
-         COALESCE(
-           pi.image_url,
-           CASE
-             WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
-             WHEN p.gender = 'MEN'   THEN '/images/men/default.jpg'
-             WHEN p.gender = 'KIDS'  THEN '/images/kids/default.jpg'
-             ELSE '/images/placeholder.jpg'
-           END
-         ) AS image_url
+         CASE
+           WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
+           WHEN p.gender = 'MEN'   THEN '/images/men/default.jpg'
+           WHEN p.gender = 'KIDS'  THEN '/images/kids/default.jpg'
+           ELSE '/images/placeholder.jpg'
+         END AS image_url
        FROM products p
        JOIN product_variants v ON v.product_id = p.id
        LEFT JOIN LATERAL (
          SELECT ean_code FROM barcodes b WHERE b.variant_id = v.id ORDER BY id ASC LIMIT 1
        ) bc ON TRUE
-       LEFT JOIN product_images pi ON pi.ean_code = bc.ean_code
        WHERE v.id = $1`,
       [req.params.id]
     );
