@@ -11,8 +11,22 @@ const toGender = (v) => {
   return '';
 };
 
+let ensured = false;
+async function ensureProductImagesTable() {
+  if (ensured) return;
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS product_images (
+      ean_code text PRIMARY KEY,
+      image_url text NOT NULL,
+      uploaded_at timestamptz DEFAULT now()
+    )
+  `);
+  ensured = true;
+}
+
 router.get('/', async (req, res) => {
   try {
+    await ensureProductImagesTable();
     const genderQ = toGender(req.query.gender || req.query.category || '');
     const brand = req.query.brand ? String(req.query.brand).trim() : '';
     const q = req.query.q ? String(req.query.q).trim() : '';
@@ -80,6 +94,7 @@ router.get('/', async (req, res) => {
 
 router.get('/category/:category', async (req, res) => {
   try {
+    await ensureProductImagesTable();
     const g = toGender(req.params.category);
     const params = [];
     let where = 'v.is_active = TRUE';
@@ -131,6 +146,7 @@ router.get('/category/:category', async (req, res) => {
 
 router.get('/gender/:gender', async (req, res) => {
   try {
+    await ensureProductImagesTable();
     const g = toGender(req.params.gender);
     const params = [];
     let where = 'v.is_active = TRUE';
@@ -182,6 +198,7 @@ router.get('/gender/:gender', async (req, res) => {
 
 router.get('/search', async (req, res) => {
   try {
+    await ensureProductImagesTable();
     const query = req.query.q || req.query.query;
     if (!query || !String(query).trim()) {
       return res.status(400).json({ message: 'Search query is required' });
@@ -237,6 +254,7 @@ router.get('/search', async (req, res) => {
 
 router.get('/:id(\\d+)', async (req, res) => {
   try {
+    await ensureProductImagesTable();
     const { rows } = await pool.query(
       `SELECT
          v.id AS id,
