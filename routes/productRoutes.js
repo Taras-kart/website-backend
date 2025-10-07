@@ -15,7 +15,6 @@ function buildListSQL(where, cloudIdx, withLimitOffset) {
   const eanExpr = `
     COALESCE(
       NULLIF(bc_var.ean_code, ''),
-      NULLIF(bc_prod.ean_code, ''),
       NULLIF(v.ean_code, ''),
       NULLIF(p.ean_code, '')
     )
@@ -55,9 +54,6 @@ function buildListSQL(where, cloudIdx, withLimitOffset) {
     LEFT JOIN LATERAL (
       SELECT ean_code FROM barcodes b WHERE b.variant_id = v.id AND COALESCE(b.ean_code,'') <> '' ORDER BY id ASC LIMIT 1
     ) bc_var ON TRUE
-    LEFT JOIN LATERAL (
-      SELECT ean_code FROM barcodes b2 WHERE b2.product_id = p.id AND COALESCE(b2.ean_code,'') <> '' ORDER BY id ASC LIMIT 1
-    ) bc_prod ON TRUE
     WHERE ${where}
     ORDER BY v.id DESC
   `;
