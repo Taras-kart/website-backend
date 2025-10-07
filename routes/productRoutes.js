@@ -11,8 +11,20 @@ const toGender = (v) => {
   return '';
 };
 
-function buildListSQL(where, cloudIdx, lim) {
-  const eanExpr = `NULLIF(bc_var.ean_code,'')`;
+function listSql(where, cloudIdx, withLimitOffset) {
+  const eanFromSelfOrSiblings = `
+    (
+      SELECT ean_code FROM barcodes b0
+      WHERE b0.variant_id = v.id AND COALESCE(NULLIF(TRIM(b0.ean_code), ''), '') <> ''
+      UNION ALL
+      SELECT b1.ean_code
+      FROM product_variants v1
+      JOIN barcodes b1 ON b1.variant_id = v1.id
+      WHERE v1.product_id = v.product_id
+        AND COALESCE(NULLIF(TRIM(b1.ean_code), ''), '') <> ''
+      LIMIT 1
+    )
+  `;
   const base = `
     SELECT
       v.id AS id,
@@ -29,11 +41,12 @@ function buildListSQL(where, cloudIdx, lim) {
       v.mrp::numeric AS mrp,
       v.sale_price::numeric AS sale_price,
       COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
-      ${eanExpr} AS ean_code,
+      ${eanFromSelfOrSiblings} AS ean_code,
       COALESCE(
         NULLIF(v.image_url, ''),
         CASE
-          WHEN ${eanExpr} IS NOT NULL THEN CONCAT('https://res.cloudinary.com/', $${cloudIdx}::text, '/image/upload/f_auto,q_auto/products/', ${eanExpr})
+          WHEN ${eanFromSelfOrSiblings} IS NOT NULL
+          THEN CONCAT('https://res.cloudinary.com/', $${cloudIdx}::text, '/image/upload/f_auto,q_auto/products/', ${eanFromSelfOrSiblings})
           ELSE NULL
         END,
         CASE
@@ -45,17 +58,12 @@ function buildListSQL(where, cloudIdx, lim) {
       ) AS image_url
     FROM products p
     JOIN product_variants v ON v.product_id = p.id
-    LEFT JOIN LATERAL (
-      SELECT ean_code
-      FROM barcodes b
-      WHERE b.variant_id = v.id AND COALESCE(b.ean_code,'') <> ''
-      ORDER BY id ASC
-      LIMIT 1
-    ) bc_var ON TRUE
     WHERE ${where}
     ORDER BY v.id DESC
   `;
-  if (lim) return `${base} LIMIT $${lim.limitIdx} OFFSET $${lim.offsetIdx}`;
+  if (withLimitOffset) {
+    return `${base} LIMIT $${withLimitOffset.limitIdx} OFFSET $${withLimitOffset.offsetIdx}`;
+  }
   return base;
 }
 
@@ -90,9 +98,8 @@ router.get('/', async (req, res) => {
     const limIdx = params.length - 1;
     const offIdx = params.length;
 
-    const sql = buildListSQL(where, cloudIdx, { limitIdx: limIdx, offsetIdx: offIdx });
+    const sql = listSql(where, cloudIdx, { limitIdx: limIdx, offsetIdx: offIdx });
     const { rows } = await pool.query(sql, params);
-    res.set('Cache-Control', 'no-store');
     res.json(rows);
   } catch (err) {
     res.status(500).json({ message: 'Server error', error: err.message });
@@ -112,9 +119,8 @@ router.get('/category/:category', async (req, res) => {
     params.push(cloud);
     const cloudIdx = params.length;
 
-    const sql = buildListSQL(where, cloudIdx);
+    const sql = listSql(where, cloudIdx);
     const { rows } = await pool.query(sql, params);
-    res.set('Cache-Control', 'no-store');
     res.json(rows);
   } catch (err) {
     res.status(500).json({ message: 'Server error', error: err.message });
@@ -134,9 +140,8 @@ router.get('/gender/:gender', async (req, res) => {
     params.push(cloud);
     const cloudIdx = params.length;
 
-    const sql = buildListSQL(where, cloudIdx);
+    const sql = listSql(where, cloudIdx);
     const { rows } = await pool.query(sql, params);
-    res.set('Cache-Control', 'no-store');
     res.json(rows);
   } catch (err) {
     res.status(500).json({ message: 'Server error', error: err.message });
@@ -163,9 +168,8 @@ router.get('/search', async (req, res) => {
         OR p.gender ILIKE $1
       )
     `;
-    const sql = buildListSQL(where, cloudIdx);
+    const sql = listSql(where, cloudIdx);
     const { rows } = await pool.query(sql, params);
-    res.set('Cache-Control', 'no-store');
     res.json(rows);
   } catch (err) {
     res.status(500).json({ message: 'Error searching products', error: err.message });
@@ -178,10 +182,9 @@ router.get('/:id(\\d+)', async (req, res) => {
     const params = [req.params.id, cloud];
     const cloudIdx = 2;
     const where = 'v.id = $1';
-    const sql = buildListSQL(where, cloudIdx);
+    const sql = listSql(where, cloudIdx);
     const { rows } = await pool.query(sql, params);
     if (!rows.length) return res.status(404).json({ message: 'Not found' });
-    res.set('Cache-Control', 'no-store');
     res.json(rows[0]);
   } catch (err) {
     res.status(500).json({ message: 'Server error', error: err.message });
