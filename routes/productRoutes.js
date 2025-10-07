@@ -18,6 +18,7 @@ router.get('/', async (req, res) => {
     const q = req.query.q ? String(req.query.q).trim() : '';
     const limit = Math.max(1, Math.min(500, parseInt(req.query.limit || '200', 10)));
     const offset = Math.max(0, parseInt(req.query.offset || '0', 10));
+
     const params = [];
     let where = 'v.is_active = TRUE';
     if (genderQ) {
@@ -32,10 +33,15 @@ router.get('/', async (req, res) => {
       params.push(`%${q}%`);
       where += ` AND (p.name ILIKE $${params.length} OR p.brand_name ILIKE $${params.length} OR v.colour ILIKE $${params.length})`;
     }
+
     const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh';
     params.push(cloud);
     const cloudIdx = params.length;
+
     params.push(limit, offset);
+    const limIdx = params.length - 1;
+    const offIdx = params.length;
+
     const sql = `
       SELECT
         v.id AS id,
@@ -56,7 +62,7 @@ router.get('/', async (req, res) => {
         COALESCE(
           NULLIF(v.image_url, ''),
           CASE
-            WHEN COALESCE(bc.ean_code,'') <> '' THEN CONCAT('https://res.cloudinary.com/', $${cloudIdx}, '/image/upload/f_auto,q_auto/products/', LOWER(p.gender), '/', bc.ean_code)
+            WHEN COALESCE(bc.ean_code,'') <> '' THEN CONCAT('https://res.cloudinary.com/', $${cloudIdx}::text, '/image/upload/f_auto,q_auto/products/', LOWER(p.gender), '/', bc.ean_code)
             ELSE NULL
           END,
           CASE
@@ -73,7 +79,7 @@ router.get('/', async (req, res) => {
       ) bc ON TRUE
       WHERE ${where}
       ORDER BY v.id DESC
-      LIMIT $${params.length-1} OFFSET $${params.length}
+      LIMIT $${limIdx} OFFSET $${offIdx}
     `;
     const { rows } = await pool.query(sql, params);
     res.json(rows);
@@ -94,6 +100,7 @@ router.get('/category/:category', async (req, res) => {
     const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh';
     params.push(cloud);
     const cloudIdx = params.length;
+
     const sql = `
       SELECT
         v.id AS id,
@@ -114,7 +121,7 @@ router.get('/category/:category', async (req, res) => {
         COALESCE(
           NULLIF(v.image_url, ''),
           CASE
-            WHEN COALESCE(bc.ean_code,'') <> '' THEN CONCAT('https://res.cloudinary.com/', $${cloudIdx}, '/image/upload/f_auto,q_auto/products/', LOWER(p.gender), '/', bc.ean_code)
+            WHEN COALESCE(bc.ean_code,'') <> '' THEN CONCAT('https://res.cloudinary.com/', $${cloudIdx}::text, '/image/upload/f_auto,q_auto/products/', LOWER(p.gender), '/', bc.ean_code)
             ELSE NULL
           END,
           CASE
@@ -151,6 +158,7 @@ router.get('/gender/:gender', async (req, res) => {
     const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh';
     params.push(cloud);
     const cloudIdx = params.length;
+
     const sql = `
       SELECT
         v.id AS id,
@@ -171,7 +179,7 @@ router.get('/gender/:gender', async (req, res) => {
         COALESCE(
           NULLIF(v.image_url, ''),
           CASE
-            WHEN COALESCE(bc.ean_code,'') <> '' THEN CONCAT('https://res.cloudinary.com/', $${cloudIdx}, '/image/upload/f_auto,q_auto/products/', LOWER(p.gender), '/', bc.ean_code)
+            WHEN COALESCE(bc.ean_code,'') <> '' THEN CONCAT('https://res.cloudinary.com/', $${cloudIdx}::text, '/image/upload/f_auto,q_auto/products/', LOWER(p.gender), '/', bc.ean_code)
             ELSE NULL
           END,
           CASE
@@ -224,7 +232,7 @@ router.get('/search', async (req, res) => {
          COALESCE(
            NULLIF(v.image_url, ''),
            CASE
-             WHEN COALESCE(bc.ean_code,'') <> '' THEN CONCAT('https://res.cloudinary.com/', $2, '/image/upload/f_auto,q_auto/products/', LOWER(p.gender), '/', bc.ean_code)
+             WHEN COALESCE(bc.ean_code,'') <> '' THEN CONCAT('https://res.cloudinary.com/', $2::text, '/image/upload/f_auto,q_auto/products/', LOWER(p.gender), '/', bc.ean_code)
              ELSE NULL
            END,
            CASE
@@ -278,7 +286,7 @@ router.get('/:id(\\d+)', async (req, res) => {
          COALESCE(
            NULLIF(v.image_url, ''),
            CASE
-             WHEN COALESCE(bc.ean_code,'') <> '' THEN CONCAT('https://res.cloudinary.com/', $2, '/image/upload/f_auto,q_auto/products/', LOWER(p.gender), '/', bc.ean_code)
+             WHEN COALESCE(bc.ean_code,'') <> '' THEN CONCAT('https://res.cloudinary.com/', $2::text, '/image/upload/f_auto,q_auto/products/', LOWER(p.gender), '/', bc.ean_code)
              ELSE NULL
            END,
            CASE
