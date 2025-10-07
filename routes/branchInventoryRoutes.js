@@ -5,9 +5,19 @@ const XLSX = require('xlsx');
 const pool = require('../db');
 const { put } = require('@vercel/blob');
 const axios = require('axios');
+const unzipper = require('unzipper');
+const { v2: cloudinary } = require('cloudinary');
+const path = require('path');
+const stream = require('stream');
 
 const router = express.Router();
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 200 * 1024 * 1024 } });
+
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET
+});
 
 const HEADER_ALIASES = {
   productname: ['product name', 'item', 'item name', 'productname'],
@@ -78,6 +88,24 @@ function requireBranchAuth(req, res, next) {
   }
 }
 
+function extractEANFromName(name) {
+  const m = String(name).match(/(\d{12,14})/);
+  return m ? m[1] : null;
+}
+
+function uploadBufferToCloudinary(buffer, folder, publicId) {
+  return new Promise((resolve, reject) => {
+    const passthrough = new stream.PassThrough();
+    const opts = { folder, public_id: publicId, overwrite: true, resource_type: 'image' };
+    const up = cloudinary.uploader.upload_stream(opts, (err, result) => {
+      if (err) return reject(err);
+      resolve(result);
+    });
+    passthrough.end(buffer);
+    passthrough.pipe(up);
+  });
+}
+
 router.get('/:branchId/import-jobs', requireBranchAuth, async (req, res) => {
   const branchId = parseInt(req.params.branchId, 10);
   if (!branchId || branchId !== Number(req.user.branch_id)) return res.status(403).json({ message: 'Forbidden' });
@@ -110,10 +138,7 @@ router.get('/:branchId/import-rows', requireBranchAuth, async (req, res) => {
       if (!r.rows.length) return res.status(404).json({ message: 'Job not found' });
       job = r.rows[0];
     } else {
-      const r = await pool.query(
-        `SELECT * FROM import_jobs WHERE branch_id=$1 ORDER BY id DESC LIMIT 1`,
-        [branchId]
-      );
+      const r = await pool.query(`SELECT * FROM import_jobs WHERE branch_id=$1 ORDER BY id DESC LIMIT 1`, [branchId]);
       if (!r.rows.length) return res.json({ job: null, rows: [], nextOffset: offset, total: 0 });
       job = r.rows[0];
     }
@@ -161,10 +186,7 @@ router.post('/:branchId/import', requireBranchAuth, upload.single('file'), async
   if (!req.file) return res.status(400).json({ message: 'File required' });
   const gender = normGender(req.body?.gender);
   if (!gender) return res.status(400).json({ message: 'Category is required (MEN/WOMEN/KIDS)' });
-  const token =
-    process.env.BLOB_READ_WRITE_TOKEN ||
-    process.env.VERCEL_BLOB_READ_WRITE_TOKEN ||
-    process.env.VERCEL_BLOB_RW_TOKEN;
+  const token = process.env.BLOB_READ_WRITE_TOKEN || process.env.VERCEL_BLOB_READ_WRITE_TOKEN || process.env.VERCEL_BLOB_RW_TOKEN;
   if (!token) return res.status(500).json({ message: 'Upload store not configured' });
   try {
     const ext = (req.file.originalname.split('.').pop() || 'xlsx').toLowerCase();
@@ -330,6 +352,70 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
     });
   } catch (e) {
     res.status(500).json({ message: e?.message || 'Server error' });
+  }
+});
+
+router.post('/:branchId/upload-images', requireBranchAuth, upload.single('imagesZip'), async (req, res) => {
+  const branchId = parseInt(req.params.branchId, 10);
+  if (!branchId || branchId !== Number(req.user.branch_id)) return res.status(403).json({ message: 'Forbidden' });
+  if (!req.file) return res.status(400).json({ message: 'ZIP file required' });
+  try {
+    const gender = normGender(req.body.gender || '');
+    const zipBuffer = req.file.buffer;
+    const zipStream = unzipper.Parse({ forceStream: true });
+    const bufferStream = new stream.PassThrough();
+    bufferStream.end(zipBuffer);
+    bufferStream.pipe(zipStream);
+
+    const uploaded = [];
+    const tasks = [];
+
+    zipStream.on('entry', (entry) => {
+      const fileName = entry.path;
+      const ext = path.extname(fileName).toLowerCase();
+      if (!['.jpg', '.jpeg', '.png', '.webp'].includes(ext)) {
+        entry.autodrain();
+        return;
+      }
+      const chunks = [];
+      entry.on('data', (c) => chunks.push(c));
+      entry.on('end', () => {
+        const buf = Buffer.concat(chunks);
+        const ean = extractEANFromName(fileName);
+        const base = path.basename(fileName, ext).replace(/[^\w-]+/g, '_');
+        const publicId = ean || base;
+        const folder = `products/${gender || 'UNKNOWN'}/${branchId}`;
+        const t = uploadBufferToCloudinary(buf, folder, publicId).then((r) => {
+          uploaded.push({ fileName, secure_url: r.secure_url, public_id: r.public_id, ean: ean || null });
+        });
+        tasks.push(t);
+      });
+    });
+
+    zipStream.on('close', async () => {
+      await Promise.all(tasks);
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS product_images (
+          ean_code text PRIMARY KEY,
+          image_url text NOT NULL,
+          uploaded_at timestamptz DEFAULT now()
+        )
+      `);
+      for (const img of uploaded) {
+        if (!img.ean) continue;
+        await pool.query(
+          `INSERT INTO product_images (ean_code, image_url, uploaded_at)
+           VALUES ($1, $2, NOW())
+           ON CONFLICT (ean_code) DO UPDATE SET image_url = EXCLUDED.image_url, uploaded_at = NOW()`,
+          [img.ean, img.secure_url]
+        );
+      }
+      res.json({ totalUploaded: uploaded.length, images: uploaded });
+    });
+
+    zipStream.on('error', (e) => res.status(500).json({ message: e.message || 'ZIP parse error' }));
+  } catch (e) {
+    res.status(500).json({ message: e.message || 'Server error' });
   }
 });
 
