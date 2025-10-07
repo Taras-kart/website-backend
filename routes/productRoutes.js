@@ -11,6 +11,62 @@ const toGender = (v) => {
   return '';
 };
 
+function buildListSQL(where, cloudIdx, withLimitOffset) {
+  const eanExpr = `
+    COALESCE(
+      NULLIF(bc_var.ean_code, ''),
+      NULLIF(bc_prod.ean_code, ''),
+      NULLIF(v.ean_code, ''),
+      NULLIF(p.ean_code, '')
+    )
+  `;
+  const base = `
+    SELECT
+      v.id AS id,
+      p.id AS product_id,
+      p.name AS product_name,
+      p.brand_name AS brand,
+      p.gender AS gender,
+      v.colour AS color,
+      v.size AS size,
+      v.mrp::numeric AS original_price_b2c,
+      v.sale_price::numeric AS final_price_b2c,
+      v.mrp::numeric AS original_price_b2b,
+      COALESCE(NULLIF(v.cost_price,0), v.sale_price)::numeric AS final_price_b2b,
+      v.mrp::numeric AS mrp,
+      v.sale_price::numeric AS sale_price,
+      COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
+      ${eanExpr} AS ean_code,
+      COALESCE(
+        NULLIF(v.image_url, ''),
+        CASE
+          WHEN ${eanExpr} IS NOT NULL THEN CONCAT('https://res.cloudinary.com/', $${cloudIdx}::text, '/image/upload/f_auto,q_auto/products/', ${eanExpr})
+          ELSE NULL
+        END,
+        CASE
+          WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
+          WHEN p.gender = 'MEN'   THEN '/images/men/default.jpg'
+          WHEN p.gender = 'KIDS'  THEN '/images/kids/default.jpg'
+          ELSE '/images/placeholder.jpg'
+        END
+      ) AS image_url
+    FROM products p
+    JOIN product_variants v ON v.product_id = p.id
+    LEFT JOIN LATERAL (
+      SELECT ean_code FROM barcodes b WHERE b.variant_id = v.id AND COALESCE(b.ean_code,'') <> '' ORDER BY id ASC LIMIT 1
+    ) bc_var ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT ean_code FROM barcodes b2 WHERE b2.product_id = p.id AND COALESCE(b2.ean_code,'') <> '' ORDER BY id ASC LIMIT 1
+    ) bc_prod ON TRUE
+    WHERE ${where}
+    ORDER BY v.id DESC
+  `;
+  if (withLimitOffset) {
+    return `${base} LIMIT $${withLimitOffset.limitIdx} OFFSET $${withLimitOffset.offsetIdx}`;
+  }
+  return base;
+}
+
 router.get('/', async (req, res) => {
   try {
     const genderQ = toGender(req.query.gender || req.query.category || '');
@@ -42,45 +98,7 @@ router.get('/', async (req, res) => {
     const limIdx = params.length - 1;
     const offIdx = params.length;
 
-    const sql = `
-      SELECT
-        v.id AS id,
-        p.id AS product_id,
-        p.name AS product_name,
-        p.brand_name AS brand,
-        p.gender AS gender,
-        v.colour AS color,
-        v.size AS size,
-        v.mrp::numeric AS original_price_b2c,
-        v.sale_price::numeric AS final_price_b2c,
-        v.mrp::numeric AS original_price_b2b,
-        COALESCE(NULLIF(v.cost_price,0), v.sale_price)::numeric AS final_price_b2b,
-        v.mrp::numeric AS mrp,
-        v.sale_price::numeric AS sale_price,
-        COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
-        COALESCE(bc.ean_code,'') AS ean_code,
-        COALESCE(
-          NULLIF(v.image_url, ''),
-          CASE
-            WHEN COALESCE(bc.ean_code,'') <> '' THEN CONCAT('https://res.cloudinary.com/', $${cloudIdx}::text, '/image/upload/f_auto,q_auto/products/', bc.ean_code)
-            ELSE NULL
-          END,
-          CASE
-            WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
-            WHEN p.gender = 'MEN'   THEN '/images/men/default.jpg'
-            WHEN p.gender = 'KIDS'  THEN '/images/kids/default.jpg'
-            ELSE '/images/placeholder.jpg'
-          END
-        ) AS image_url
-      FROM products p
-      JOIN product_variants v ON v.product_id = p.id
-      LEFT JOIN LATERAL (
-        SELECT ean_code FROM barcodes b WHERE b.variant_id = v.id ORDER BY id ASC LIMIT 1
-      ) bc ON TRUE
-      WHERE ${where}
-      ORDER BY v.id DESC
-      LIMIT $${limIdx} OFFSET $${offIdx}
-    `;
+    const sql = buildListSQL(where, cloudIdx, { limitIdx: limIdx, offsetIdx: offIdx });
     const { rows } = await pool.query(sql, params);
     res.json(rows);
   } catch (err) {
@@ -101,44 +119,7 @@ router.get('/category/:category', async (req, res) => {
     params.push(cloud);
     const cloudIdx = params.length;
 
-    const sql = `
-      SELECT
-        v.id AS id,
-        p.id AS product_id,
-        p.name AS product_name,
-        p.brand_name AS brand,
-        p.gender AS gender,
-        v.colour AS color,
-        v.size AS size,
-        v.mrp::numeric AS original_price_b2c,
-        v.sale_price::numeric AS final_price_b2c,
-        v.mrp::numeric AS original_price_b2b,
-        COALESCE(NULLIF(v.cost_price,0), v.sale_price)::numeric AS final_price_b2b,
-        v.mrp::numeric AS mrp,
-        v.sale_price::numeric AS sale_price,
-        COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
-        COALESCE(bc.ean_code,'') AS ean_code,
-        COALESCE(
-          NULLIF(v.image_url, ''),
-          CASE
-            WHEN COALESCE(bc.ean_code,'') <> '' THEN CONCAT('https://res.cloudinary.com/', $${cloudIdx}::text, '/image/upload/f_auto,q_auto/products/', bc.ean_code)
-            ELSE NULL
-          END,
-          CASE
-            WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
-            WHEN p.gender = 'MEN'   THEN '/images/men/default.jpg'
-            WHEN p.gender = 'KIDS'  THEN '/images/kids/default.jpg'
-            ELSE '/images/placeholder.jpg'
-          END
-        ) AS image_url
-      FROM products p
-      JOIN product_variants v ON v.product_id = p.id
-      LEFT JOIN LATERAL (
-        SELECT ean_code FROM barcodes b WHERE b.variant_id = v.id ORDER BY id ASC LIMIT 1
-      ) bc ON TRUE
-      WHERE ${where}
-      ORDER BY v.id DESC
-    `;
+    const sql = buildListSQL(where, cloudIdx);
     const { rows } = await pool.query(sql, params);
     res.json(rows);
   } catch (err) {
@@ -159,44 +140,7 @@ router.get('/gender/:gender', async (req, res) => {
     params.push(cloud);
     const cloudIdx = params.length;
 
-    const sql = `
-      SELECT
-        v.id AS id,
-        p.id AS product_id,
-        p.name AS product_name,
-        p.brand_name AS brand,
-        p.gender AS gender,
-        v.colour AS color,
-        v.size AS size,
-        v.mrp::numeric AS original_price_b2c,
-        v.sale_price::numeric AS final_price_b2c,
-        v.mrp::numeric AS original_price_b2b,
-        COALESCE(NULLIF(v.cost_price,0), v.sale_price)::numeric AS final_price_b2b,
-        v.mrp::numeric AS mrp,
-        v.sale_price::numeric AS sale_price,
-        COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
-        COALESCE(bc.ean_code,'') AS ean_code,
-        COALESCE(
-          NULLIF(v.image_url, ''),
-          CASE
-            WHEN COALESCE(bc.ean_code,'') <> '' THEN CONCAT('https://res.cloudinary.com/', $${cloudIdx}::text, '/image/upload/f_auto,q_auto/products/', bc.ean_code)
-            ELSE NULL
-          END,
-          CASE
-            WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
-            WHEN p.gender = 'MEN'   THEN '/images/men/default.jpg'
-            WHEN p.gender = 'KIDS'  THEN '/images/kids/default.jpg'
-            ELSE '/images/placeholder.jpg'
-          END
-        ) AS image_url
-      FROM products p
-      JOIN product_variants v ON v.product_id = p.id
-      LEFT JOIN LATERAL (
-        SELECT ean_code FROM barcodes b WHERE b.variant_id = v.id ORDER BY id ASC LIMIT 1
-      ) bc ON TRUE
-      WHERE ${where}
-      ORDER BY v.id DESC
-    `;
+    const sql = buildListSQL(where, cloudIdx);
     const { rows } = await pool.query(sql, params);
     res.json(rows);
   } catch (err) {
@@ -212,51 +156,20 @@ router.get('/search', async (req, res) => {
     }
     const term = `%${String(query).trim()}%`;
     const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh';
-    const { rows } = await pool.query(
-      `SELECT
-         v.id AS id,
-         p.id AS product_id,
-         p.name AS product_name,
-         p.brand_name AS brand,
-         p.gender AS gender,
-         v.colour AS color,
-         v.size AS size,
-         v.mrp::numeric AS original_price_b2c,
-         v.sale_price::numeric AS final_price_b2c,
-         v.mrp::numeric AS original_price_b2b,
-         COALESCE(NULLIF(v.cost_price,0), v.sale_price)::numeric AS final_price_b2b,
-         v.mrp::numeric AS mrp,
-         v.sale_price::numeric AS sale_price,
-         COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
-         COALESCE(bc.ean_code,'') AS ean_code,
-         COALESCE(
-           NULLIF(v.image_url, ''),
-           CASE
-             WHEN COALESCE(bc.ean_code,'') <> '' THEN CONCAT('https://res.cloudinary.com/', $2::text, '/image/upload/f_auto,q_auto/products/', bc.ean_code)
-             ELSE NULL
-           END,
-           CASE
-             WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
-             WHEN p.gender = 'MEN'   THEN '/images/men/default.jpg'
-             WHEN p.gender = 'KIDS'  THEN '/images/kids/default.jpg'
-             ELSE '/images/placeholder.jpg'
-           END
-         ) AS image_url
-       FROM products p
-       JOIN product_variants v ON v.product_id = p.id
-       LEFT JOIN LATERAL (
-         SELECT ean_code FROM barcodes b WHERE b.variant_id = v.id ORDER BY id ASC LIMIT 1
-       ) bc ON TRUE
-       WHERE v.is_active = TRUE
-         AND (
-           p.name ILIKE $1
-           OR p.brand_name ILIKE $1
-           OR v.colour ILIKE $1
-           OR p.gender ILIKE $1
-         )
-       ORDER BY v.id DESC`,
-      [term, cloud]
-    );
+    const params = [term, cloud];
+    const cloudIdx = 2;
+
+    const where = `
+      v.is_active = TRUE
+      AND (
+        p.name ILIKE $1
+        OR p.brand_name ILIKE $1
+        OR v.colour ILIKE $1
+        OR p.gender ILIKE $1
+      )
+    `;
+    const sql = buildListSQL(where, cloudIdx);
+    const { rows } = await pool.query(sql, params);
     res.json(rows);
   } catch (err) {
     res.status(500).json({ message: 'Error searching products', error: err.message });
@@ -266,44 +179,11 @@ router.get('/search', async (req, res) => {
 router.get('/:id(\\d+)', async (req, res) => {
   try {
     const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh';
-    const { rows } = await pool.query(
-      `SELECT
-         v.id AS id,
-         p.id AS product_id,
-         p.name AS product_name,
-         p.brand_name AS brand,
-         p.gender AS gender,
-         v.colour AS color,
-         v.size AS size,
-         v.mrp::numeric AS original_price_b2c,
-         v.sale_price::numeric AS final_price_b2c,
-         v.mrp::numeric AS original_price_b2b,
-         COALESCE(NULLIF(v.cost_price,0), v.sale_price)::numeric AS final_price_b2b,
-         v.mrp::numeric AS mrp,
-         v.sale_price::numeric AS sale_price,
-         COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
-         COALESCE(bc.ean_code,'') AS ean_code,
-         COALESCE(
-           NULLIF(v.image_url, ''),
-           CASE
-             WHEN COALESCE(bc.ean_code,'') <> '' THEN CONCAT('https://res.cloudinary.com/', $2::text, '/image/upload/f_auto,q_auto/products/', bc.ean_code)
-             ELSE NULL
-           END,
-           CASE
-             WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
-             WHEN p.gender = 'MEN'   THEN '/images/men/default.jpg'
-             WHEN p.gender = 'KIDS'  THEN '/images/kids/default.jpg'
-             ELSE '/images/placeholder.jpg'
-           END
-         ) AS image_url
-       FROM products p
-       JOIN product_variants v ON v.product_id = p.id
-       LEFT JOIN LATERAL (
-         SELECT ean_code FROM barcodes b WHERE b.variant_id = v.id ORDER BY id ASC LIMIT 1
-       ) bc ON TRUE
-       WHERE v.id = $1`,
-      [req.params.id, cloud]
-    );
+    const params = [req.params.id, cloud];
+    const cloudIdx = 2;
+    const where = 'v.id = $1';
+    const sql = buildListSQL(where, cloudIdx);
+    const { rows } = await pool.query(sql, params);
     if (!rows.length) return res.status(404).json({ message: 'Not found' });
     res.json(rows[0]);
   } catch (err) {
