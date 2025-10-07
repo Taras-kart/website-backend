@@ -12,12 +12,7 @@ const toGender = (v) => {
 };
 
 function buildListSQL(where, cloudIdx, lim) {
-  const eanExpr = `
-    COALESCE(
-      NULLIF(bc_var.ean_code, ''),
-      NULLIF(p.ean_code, '')
-    )
-  `;
+  const eanExpr = `NULLIF(bc_var.ean_code,'')`;
   const base = `
     SELECT
       v.id AS id,
