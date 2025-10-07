@@ -18,7 +18,6 @@ router.get('/', async (req, res) => {
     const q = req.query.q ? String(req.query.q).trim() : '';
     const limit = Math.max(1, Math.min(500, parseInt(req.query.limit || '200', 10)));
     const offset = Math.max(0, parseInt(req.query.offset || '0', 10));
-
     const params = [];
     let where = 'v.is_active = TRUE';
     if (genderQ) {
@@ -33,8 +32,10 @@ router.get('/', async (req, res) => {
       params.push(`%${q}%`);
       where += ` AND (p.name ILIKE $${params.length} OR p.brand_name ILIKE $${params.length} OR v.colour ILIKE $${params.length})`;
     }
+    const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh';
+    params.push(cloud);
+    const cloudIdx = params.length;
     params.push(limit, offset);
-
     const sql = `
       SELECT
         v.id AS id,
@@ -54,6 +55,10 @@ router.get('/', async (req, res) => {
         COALESCE(bc.ean_code,'') AS ean_code,
         COALESCE(
           NULLIF(v.image_url, ''),
+          CASE
+            WHEN COALESCE(bc.ean_code,'') <> '' THEN CONCAT('https://res.cloudinary.com/', $${cloudIdx}, '/image/upload/f_auto,q_auto/products/', LOWER(p.gender), '/', bc.ean_code)
+            ELSE NULL
+          END,
           CASE
             WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
             WHEN p.gender = 'MEN'   THEN '/images/men/default.jpg'
@@ -86,6 +91,9 @@ router.get('/category/:category', async (req, res) => {
       params.push(g);
       where += ` AND p.gender = $${params.length}`;
     }
+    const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh';
+    params.push(cloud);
+    const cloudIdx = params.length;
     const sql = `
       SELECT
         v.id AS id,
@@ -105,6 +113,10 @@ router.get('/category/:category', async (req, res) => {
         COALESCE(bc.ean_code,'') AS ean_code,
         COALESCE(
           NULLIF(v.image_url, ''),
+          CASE
+            WHEN COALESCE(bc.ean_code,'') <> '' THEN CONCAT('https://res.cloudinary.com/', $${cloudIdx}, '/image/upload/f_auto,q_auto/products/', LOWER(p.gender), '/', bc.ean_code)
+            ELSE NULL
+          END,
           CASE
             WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
             WHEN p.gender = 'MEN'   THEN '/images/men/default.jpg'
@@ -136,6 +148,9 @@ router.get('/gender/:gender', async (req, res) => {
       params.push(g);
       where += ` AND p.gender = $${params.length}`;
     }
+    const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh';
+    params.push(cloud);
+    const cloudIdx = params.length;
     const sql = `
       SELECT
         v.id AS id,
@@ -155,6 +170,10 @@ router.get('/gender/:gender', async (req, res) => {
         COALESCE(bc.ean_code,'') AS ean_code,
         COALESCE(
           NULLIF(v.image_url, ''),
+          CASE
+            WHEN COALESCE(bc.ean_code,'') <> '' THEN CONCAT('https://res.cloudinary.com/', $${cloudIdx}, '/image/upload/f_auto,q_auto/products/', LOWER(p.gender), '/', bc.ean_code)
+            ELSE NULL
+          END,
           CASE
             WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
             WHEN p.gender = 'MEN'   THEN '/images/men/default.jpg'
@@ -184,6 +203,7 @@ router.get('/search', async (req, res) => {
       return res.status(400).json({ message: 'Search query is required' });
     }
     const term = `%${String(query).trim()}%`;
+    const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh';
     const { rows } = await pool.query(
       `SELECT
          v.id AS id,
@@ -203,6 +223,10 @@ router.get('/search', async (req, res) => {
          COALESCE(bc.ean_code,'') AS ean_code,
          COALESCE(
            NULLIF(v.image_url, ''),
+           CASE
+             WHEN COALESCE(bc.ean_code,'') <> '' THEN CONCAT('https://res.cloudinary.com/', $2, '/image/upload/f_auto,q_auto/products/', LOWER(p.gender), '/', bc.ean_code)
+             ELSE NULL
+           END,
            CASE
              WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
              WHEN p.gender = 'MEN'   THEN '/images/men/default.jpg'
@@ -223,7 +247,7 @@ router.get('/search', async (req, res) => {
            OR p.gender ILIKE $1
          )
        ORDER BY v.id DESC`,
-      [term]
+      [term, cloud]
     );
     res.json(rows);
   } catch (err) {
@@ -233,6 +257,7 @@ router.get('/search', async (req, res) => {
 
 router.get('/:id(\\d+)', async (req, res) => {
   try {
+    const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh';
     const { rows } = await pool.query(
       `SELECT
          v.id AS id,
@@ -253,6 +278,10 @@ router.get('/:id(\\d+)', async (req, res) => {
          COALESCE(
            NULLIF(v.image_url, ''),
            CASE
+             WHEN COALESCE(bc.ean_code,'') <> '' THEN CONCAT('https://res.cloudinary.com/', $2, '/image/upload/f_auto,q_auto/products/', LOWER(p.gender), '/', bc.ean_code)
+             ELSE NULL
+           END,
+           CASE
              WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
              WHEN p.gender = 'MEN'   THEN '/images/men/default.jpg'
              WHEN p.gender = 'KIDS'  THEN '/images/kids/default.jpg'
@@ -265,7 +294,7 @@ router.get('/:id(\\d+)', async (req, res) => {
          SELECT ean_code FROM barcodes b WHERE b.variant_id = v.id ORDER BY id ASC LIMIT 1
        ) bc ON TRUE
        WHERE v.id = $1`,
-      [req.params.id]
+      [req.params.id, cloud]
     );
     if (!rows.length) return res.status(404).json({ message: 'Not found' });
     res.json(rows[0]);
