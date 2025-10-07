@@ -52,12 +52,16 @@ router.get('/', async (req, res) => {
         v.sale_price::numeric AS sale_price,
         COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
         COALESCE(bc.ean_code,'') AS ean_code,
-        CASE
-          WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
-          WHEN p.gender = 'MEN'   THEN '/images/men/default.jpg'
-          WHEN p.gender = 'KIDS'  THEN '/images/kids/default.jpg'
-          ELSE '/images/placeholder.jpg'
-        END AS image_url
+        COALESCE(
+          NULLIF(v.image_url, ''),
+          NULLIF(p.image_url, ''),
+          CASE
+            WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
+            WHEN p.gender = 'MEN'   THEN '/images/men/default.jpg'
+            WHEN p.gender = 'KIDS'  THEN '/images/kids/default.jpg'
+            ELSE '/images/placeholder.jpg'
+          END
+        ) AS image_url
       FROM products p
       JOIN product_variants v ON v.product_id = p.id
       LEFT JOIN LATERAL (
@@ -100,12 +104,16 @@ router.get('/category/:category', async (req, res) => {
         v.sale_price::numeric AS sale_price,
         COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
         COALESCE(bc.ean_code,'') AS ean_code,
-        CASE
-          WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
-          WHEN p.gender = 'MEN'   THEN '/images/men/default.jpg'
-          WHEN p.gender = 'KIDS'  THEN '/images/kids/default.jpg'
-          ELSE '/images/placeholder.jpg'
-        END AS image_url
+        COALESCE(
+          NULLIF(v.image_url, ''),
+          NULLIF(p.image_url, ''),
+          CASE
+            WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
+            WHEN p.gender = 'MEN'   THEN '/images/men/default.jpg'
+            WHEN p.gender = 'KIDS'  THEN '/images/kids/default.jpg'
+            ELSE '/images/placeholder.jpg'
+          END
+        ) AS image_url
       FROM products p
       JOIN product_variants v ON v.product_id = p.id
       LEFT JOIN LATERAL (
@@ -147,12 +155,16 @@ router.get('/gender/:gender', async (req, res) => {
         v.sale_price::numeric AS sale_price,
         COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
         COALESCE(bc.ean_code,'') AS ean_code,
-        CASE
-          WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
-          WHEN p.gender = 'MEN'   THEN '/images/men/default.jpg'
-          WHEN p.gender = 'KIDS'  THEN '/images/kids/default.jpg'
-          ELSE '/images/placeholder.jpg'
-        END AS image_url
+        COALESCE(
+          NULLIF(v.image_url, ''),
+          NULLIF(p.image_url, ''),
+          CASE
+            WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
+            WHEN p.gender = 'MEN'   THEN '/images/men/default.jpg'
+            WHEN p.gender = 'KIDS'  THEN '/images/kids/default.jpg'
+            ELSE '/images/placeholder.jpg'
+          END
+        ) AS image_url
       FROM products p
       JOIN product_variants v ON v.product_id = p.id
       LEFT JOIN LATERAL (
@@ -192,12 +204,16 @@ router.get('/search', async (req, res) => {
          v.sale_price::numeric AS sale_price,
          COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
          COALESCE(bc.ean_code,'') AS ean_code,
-         CASE
-           WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
-           WHEN p.gender = 'MEN'   THEN '/images/men/default.jpg'
-           WHEN p.gender = 'KIDS'  THEN '/images/kids/default.jpg'
-           ELSE '/images/placeholder.jpg'
-         END AS image_url
+         COALESCE(
+           NULLIF(v.image_url, ''),
+           NULLIF(p.image_url, ''),
+           CASE
+             WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
+             WHEN p.gender = 'MEN'   THEN '/images/men/default.jpg'
+             WHEN p.gender = 'KIDS'  THEN '/images/kids/default.jpg'
+             ELSE '/images/placeholder.jpg'
+           END
+         ) AS image_url
        FROM products p
        JOIN product_variants v ON v.product_id = p.id
        LEFT JOIN LATERAL (
@@ -238,12 +254,16 @@ router.get('/:id(\\d+)', async (req, res) => {
          v.sale_price::numeric AS sale_price,
          COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
          COALESCE(bc.ean_code,'') AS ean_code,
-         CASE
-           WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
-           WHEN p.gender = 'MEN'   THEN '/images/men/default.jpg'
-           WHEN p.gender = 'KIDS'  THEN '/images/kids/default.jpg'
-           ELSE '/images/placeholder.jpg'
-         END AS image_url
+         COALESCE(
+           NULLIF(v.image_url, ''),
+           NULLIF(p.image_url, ''),
+           CASE
+             WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
+             WHEN p.gender = 'MEN'   THEN '/images/men/default.jpg'
+             WHEN p.gender = 'KIDS'  THEN '/images/kids/default.jpg'
+             ELSE '/images/placeholder.jpg'
+           END
+         ) AS image_url
        FROM products p
        JOIN product_variants v ON v.product_id = p.id
        LEFT JOIN LATERAL (
