@@ -54,7 +54,6 @@ router.get('/', async (req, res) => {
         COALESCE(bc.ean_code,'') AS ean_code,
         COALESCE(
           NULLIF(v.image_url, ''),
-          NULLIF(p.image_url, ''),
           CASE
             WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
             WHEN p.gender = 'MEN'   THEN '/images/men/default.jpg'
@@ -106,7 +105,6 @@ router.get('/category/:category', async (req, res) => {
         COALESCE(bc.ean_code,'') AS ean_code,
         COALESCE(
           NULLIF(v.image_url, ''),
-          NULLIF(p.image_url, ''),
           CASE
             WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
             WHEN p.gender = 'MEN'   THEN '/images/men/default.jpg'
@@ -157,7 +155,6 @@ router.get('/gender/:gender', async (req, res) => {
         COALESCE(bc.ean_code,'') AS ean_code,
         COALESCE(
           NULLIF(v.image_url, ''),
-          NULLIF(p.image_url, ''),
           CASE
             WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
             WHEN p.gender = 'MEN'   THEN '/images/men/default.jpg'
@@ -206,7 +203,6 @@ router.get('/search', async (req, res) => {
          COALESCE(bc.ean_code,'') AS ean_code,
          COALESCE(
            NULLIF(v.image_url, ''),
-           NULLIF(p.image_url, ''),
            CASE
              WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
              WHEN p.gender = 'MEN'   THEN '/images/men/default.jpg'
@@ -256,7 +252,6 @@ router.get('/:id(\\d+)', async (req, res) => {
          COALESCE(bc.ean_code,'') AS ean_code,
          COALESCE(
            NULLIF(v.image_url, ''),
-           NULLIF(p.image_url, ''),
            CASE
              WHEN p.gender = 'WOMEN' THEN '/images/women/women20.jpeg'
              WHEN p.gender = 'MEN'   THEN '/images/men/default.jpg'
