@@ -61,8 +61,9 @@ router.get('/', async (req, res) => {
         COALESCE(bc.ean_code,'') AS ean_code,
         COALESCE(
           NULLIF(v.image_url, ''),
+          NULLIF(pi.image_url, ''),
           CASE
-            WHEN COALESCE(bc.ean_code,'') <> '' THEN CONCAT('https://res.cloudinary.com/', $${cloudIdx}::text, '/image/upload/f_auto,q_auto/products/', LOWER(p.gender), '/', bc.ean_code)
+            WHEN COALESCE(bc.ean_code,'') <> '' THEN CONCAT('https://res.cloudinary.com/', $${cloudIdx}::text, '/image/upload/f_auto,q_auto/products/', bc.ean_code)
             ELSE NULL
           END,
           CASE
@@ -77,6 +78,7 @@ router.get('/', async (req, res) => {
       LEFT JOIN LATERAL (
         SELECT ean_code FROM barcodes b WHERE b.variant_id = v.id ORDER BY id ASC LIMIT 1
       ) bc ON TRUE
+      LEFT JOIN product_images pi ON pi.ean_code = bc.ean_code
       WHERE ${where}
       ORDER BY v.id DESC
       LIMIT $${limIdx} OFFSET $${offIdx}
@@ -120,8 +122,9 @@ router.get('/category/:category', async (req, res) => {
         COALESCE(bc.ean_code,'') AS ean_code,
         COALESCE(
           NULLIF(v.image_url, ''),
+          NULLIF(pi.image_url, ''),
           CASE
-            WHEN COALESCE(bc.ean_code,'') <> '' THEN CONCAT('https://res.cloudinary.com/', $${cloudIdx}::text, '/image/upload/f_auto,q_auto/products/', LOWER(p.gender), '/', bc.ean_code)
+            WHEN COALESCE(bc.ean_code,'') <> '' THEN CONCAT('https://res.cloudinary.com/', $${cloudIdx}::text, '/image/upload/f_auto,q_auto/products/', bc.ean_code)
             ELSE NULL
           END,
           CASE
@@ -136,6 +139,7 @@ router.get('/category/:category', async (req, res) => {
       LEFT JOIN LATERAL (
         SELECT ean_code FROM barcodes b WHERE b.variant_id = v.id ORDER BY id ASC LIMIT 1
       ) bc ON TRUE
+      LEFT JOIN product_images pi ON pi.ean_code = bc.ean_code
       WHERE ${where}
       ORDER BY v.id DESC
     `;
@@ -178,8 +182,9 @@ router.get('/gender/:gender', async (req, res) => {
         COALESCE(bc.ean_code,'') AS ean_code,
         COALESCE(
           NULLIF(v.image_url, ''),
+          NULLIF(pi.image_url, ''),
           CASE
-            WHEN COALESCE(bc.ean_code,'') <> '' THEN CONCAT('https://res.cloudinary.com/', $${cloudIdx}::text, '/image/upload/f_auto,q_auto/products/', LOWER(p.gender), '/', bc.ean_code)
+            WHEN COALESCE(bc.ean_code,'') <> '' THEN CONCAT('https://res.cloudinary.com/', $${cloudIdx}::text, '/image/upload/f_auto,q_auto/products/', bc.ean_code)
             ELSE NULL
           END,
           CASE
@@ -194,6 +199,7 @@ router.get('/gender/:gender', async (req, res) => {
       LEFT JOIN LATERAL (
         SELECT ean_code FROM barcodes b WHERE b.variant_id = v.id ORDER BY id ASC LIMIT 1
       ) bc ON TRUE
+      LEFT JOIN product_images pi ON pi.ean_code = bc.ean_code
       WHERE ${where}
       ORDER BY v.id DESC
     `;
@@ -231,8 +237,9 @@ router.get('/search', async (req, res) => {
          COALESCE(bc.ean_code,'') AS ean_code,
          COALESCE(
            NULLIF(v.image_url, ''),
+           NULLIF(pi.image_url, ''),
            CASE
-             WHEN COALESCE(bc.ean_code,'') <> '' THEN CONCAT('https://res.cloudinary.com/', $2::text, '/image/upload/f_auto,q_auto/products/', LOWER(p.gender), '/', bc.ean_code)
+             WHEN COALESCE(bc.ean_code,'') <> '' THEN CONCAT('https://res.cloudinary.com/', $2::text, '/image/upload/f_auto,q_auto/products/', bc.ean_code)
              ELSE NULL
            END,
            CASE
@@ -247,6 +254,7 @@ router.get('/search', async (req, res) => {
        LEFT JOIN LATERAL (
          SELECT ean_code FROM barcodes b WHERE b.variant_id = v.id ORDER BY id ASC LIMIT 1
        ) bc ON TRUE
+       LEFT JOIN product_images pi ON pi.ean_code = bc.ean_code
        WHERE v.is_active = TRUE
          AND (
            p.name ILIKE $1
@@ -285,8 +293,9 @@ router.get('/:id(\\d+)', async (req, res) => {
          COALESCE(bc.ean_code,'') AS ean_code,
          COALESCE(
            NULLIF(v.image_url, ''),
+           NULLIF(pi.image_url, ''),
            CASE
-             WHEN COALESCE(bc.ean_code,'') <> '' THEN CONCAT('https://res.cloudinary.com/', $2::text, '/image/upload/f_auto,q_auto/products/', LOWER(p.gender), '/', bc.ean_code)
+             WHEN COALESCE(bc.ean_code,'') <> '' THEN CONCAT('https://res.cloudinary.com/', $2::text, '/image/upload/f_auto,q_auto/products/', bc.ean_code)
              ELSE NULL
            END,
            CASE
@@ -301,6 +310,7 @@ router.get('/:id(\\d+)', async (req, res) => {
        LEFT JOIN LATERAL (
          SELECT ean_code FROM barcodes b WHERE b.variant_id = v.id ORDER BY id ASC LIMIT 1
        ) bc ON TRUE
+       LEFT JOIN product_images pi ON pi.ean_code = bc.ean_code
        WHERE v.id = $1`,
       [req.params.id, cloud]
     );

@@ -360,7 +360,6 @@ router.post('/:branchId/upload-images', requireBranchAuth, upload.single('images
   if (!branchId || branchId !== Number(req.user.branch_id)) return res.status(403).json({ message: 'Forbidden' });
   if (!req.file) return res.status(400).json({ message: 'ZIP file required' });
   try {
-    const gender = normGender(req.body.gender || '');
     const zipBuffer = req.file.buffer;
     const zipStream = unzipper.Parse({ forceStream: true });
     const bufferStream = new stream.PassThrough();
@@ -384,7 +383,7 @@ router.post('/:branchId/upload-images', requireBranchAuth, upload.single('images
         const ean = extractEANFromName(fileName);
         const base = path.basename(fileName, ext).replace(/[^\w-]+/g, '_');
         const publicId = ean || base;
-        const folder = `products/${gender || 'UNKNOWN'}/${branchId}`;
+        const folder = `products`;
         const t = uploadBufferToCloudinary(buf, folder, publicId).then((r) => {
           uploaded.push({ fileName, secure_url: r.secure_url, public_id: r.public_id, ean: ean || null });
         });
@@ -401,14 +400,31 @@ router.post('/:branchId/upload-images', requireBranchAuth, upload.single('images
           uploaded_at timestamptz DEFAULT now()
         )
       `);
-      for (const img of uploaded) {
-        if (!img.ean) continue;
-        await pool.query(
-          `INSERT INTO product_images (ean_code, image_url, uploaded_at)
-           VALUES ($1, $2, NOW())
-           ON CONFLICT (ean_code) DO UPDATE SET image_url = EXCLUDED.image_url, uploaded_at = NOW()`,
-          [img.ean, img.secure_url]
-        );
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        for (const img of uploaded) {
+          if (!img.ean) continue;
+          await client.query(
+            `INSERT INTO product_images (ean_code, image_url, uploaded_at)
+             VALUES ($1, $2, NOW())
+             ON CONFLICT (ean_code) DO UPDATE SET image_url = EXCLUDED.image_url, uploaded_at = NOW()`,
+            [img.ean, img.secure_url]
+          );
+          await client.query(
+            `UPDATE product_variants v
+               SET image_url = $2
+             FROM barcodes b
+             WHERE b.variant_id = v.id AND b.ean_code = $1`,
+            [img.ean, img.secure_url]
+          );
+        }
+        await client.query('COMMIT');
+      } catch (e) {
+        await client.query('ROLLBACK');
+        return res.status(500).json({ message: e.message || 'DB error' });
+      } finally {
+        client.release();
       }
       res.json({ totalUploaded: uploaded.length, images: uploaded });
     });
@@ -447,13 +463,15 @@ router.get('/:branchId/stock', requireBranchAuth, async (req, res) => {
          v.cost_price,
          bvs.on_hand,
          bvs.reserved,
-         COALESCE(bc.ean_code,'') AS ean_code
+         COALESCE(bc.ean_code,'') AS ean_code,
+         COALESCE(v.image_url, pi.image_url, '') AS image_url
        FROM branch_variant_stock bvs
        JOIN product_variants v ON v.id = bvs.variant_id
        JOIN products p ON p.id = v.product_id
        LEFT JOIN LATERAL (
          SELECT ean_code FROM barcodes bc WHERE bc.variant_id = v.id ORDER BY id ASC LIMIT 1
        ) bc ON TRUE
+       LEFT JOIN product_images pi ON pi.ean_code = bc.ean_code
        WHERE ${where}
        ORDER BY p.brand_name, p.name, v.size, v.colour`,
       params
