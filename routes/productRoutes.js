@@ -1,3 +1,4 @@
+// D:\shopping-backend\routes\productRoutes.js
 const express = require('express');
 const pool = require('../db');
 const router = express.Router();
@@ -58,12 +59,12 @@ router.get('/', async (req, res) => {
         v.mrp::numeric AS mrp,
         v.sale_price::numeric AS sale_price,
         COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
-        COALESCE(bc.ean_code,'') AS ean_code,
+        COALESCE(bc_self.ean_code, bc_any.ean_code, '') AS ean_code,
         COALESCE(
           NULLIF(v.image_url, ''),
           NULLIF(pi.image_url, ''),
           CASE
-            WHEN COALESCE(bc.ean_code,'') <> '' THEN CONCAT('https://res.cloudinary.com/', $${cloudIdx}::text, '/image/upload/f_auto,q_auto/products/', bc.ean_code)
+            WHEN COALESCE(bc_self.ean_code, bc_any.ean_code, '') <> '' THEN CONCAT('https://res.cloudinary.com/', $${cloudIdx}::text, '/image/upload/f_auto,q_auto/products/', COALESCE(bc_self.ean_code, bc_any.ean_code))
             ELSE NULL
           END,
           CASE
@@ -77,8 +78,17 @@ router.get('/', async (req, res) => {
       JOIN product_variants v ON v.product_id = p.id
       LEFT JOIN LATERAL (
         SELECT ean_code FROM barcodes b WHERE b.variant_id = v.id ORDER BY id ASC LIMIT 1
-      ) bc ON TRUE
-      LEFT JOIN product_images pi ON pi.ean_code = bc.ean_code
+      ) bc_self ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT b2.ean_code
+        FROM product_variants v2
+        JOIN products p2 ON p2.id = v2.product_id
+        JOIN barcodes b2 ON b2.variant_id = v2.id
+        WHERE p2.name = p.name AND p2.brand_name = p.brand_name AND v2.size = v.size AND v2.colour = v.colour
+        ORDER BY b2.id ASC
+        LIMIT 1
+      ) bc_any ON TRUE
+      LEFT JOIN product_images pi ON pi.ean_code = COALESCE(bc_self.ean_code, bc_any.ean_code)
       WHERE ${where}
       ORDER BY v.id DESC
       LIMIT $${limIdx} OFFSET $${offIdx}
@@ -119,12 +129,12 @@ router.get('/category/:category', async (req, res) => {
         v.mrp::numeric AS mrp,
         v.sale_price::numeric AS sale_price,
         COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
-        COALESCE(bc.ean_code,'') AS ean_code,
+        COALESCE(bc_self.ean_code, bc_any.ean_code, '') AS ean_code,
         COALESCE(
           NULLIF(v.image_url, ''),
           NULLIF(pi.image_url, ''),
           CASE
-            WHEN COALESCE(bc.ean_code,'') <> '' THEN CONCAT('https://res.cloudinary.com/', $${cloudIdx}::text, '/image/upload/f_auto,q_auto/products/', bc.ean_code)
+            WHEN COALESCE(bc_self.ean_code, bc_any.ean_code, '') <> '' THEN CONCAT('https://res.cloudinary.com/', $${cloudIdx}::text, '/image/upload/f_auto,q_auto/products/', COALESCE(bc_self.ean_code, bc_any.ean_code))
             ELSE NULL
           END,
           CASE
@@ -138,8 +148,18 @@ router.get('/category/:category', async (req, res) => {
       JOIN product_variants v ON v.product_id = p.id
       LEFT JOIN LATERAL (
         SELECT ean_code FROM barcodes b WHERE b.variant_id = v.id ORDER BY id ASC LIMIT 1
-      ) bc ON TRUE
-      LEFT JOIN product_images pi ON pi.ean_code = bc.ean_code
+      ) bc_self ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT b2.ean_code
+        FROM product_variants v2
+        JOIN products p2 ON p2.id = v2.product_id
+        JOIN barcodes b2 ON b2.variant_id = v2.id
+        WHERE p2.name = p.name AND p2.brand_name = p.brand_name AND v2.size = v.size AND v2.colour = v.colour
+        ORDER BY b2.id ASC
+        LIMIT 1
+      ) bc_any ON TRUE
+      LEFT JOIN product_images pi ON pi.ean_code = COALESCE(bc_self.ean_code, bc_any.ean_code
+      )
       WHERE ${where}
       ORDER BY v.id DESC
     `;
@@ -179,12 +199,12 @@ router.get('/gender/:gender', async (req, res) => {
         v.mrp::numeric AS mrp,
         v.sale_price::numeric AS sale_price,
         COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
-        COALESCE(bc.ean_code,'') AS ean_code,
+        COALESCE(bc_self.ean_code, bc_any.ean_code, '') AS ean_code,
         COALESCE(
           NULLIF(v.image_url, ''),
           NULLIF(pi.image_url, ''),
           CASE
-            WHEN COALESCE(bc.ean_code,'') <> '' THEN CONCAT('https://res.cloudinary.com/', $${cloudIdx}::text, '/image/upload/f_auto,q_auto/products/', bc.ean_code)
+            WHEN COALESCE(bc_self.ean_code, bc_any.ean_code, '') <> '' THEN CONCAT('https://res.cloudinary.com/', $${cloudIdx}::text, '/image/upload/f_auto,q_auto/products/', COALESCE(bc_self.ean_code, bc_any.ean_code))
             ELSE NULL
           END,
           CASE
@@ -198,8 +218,17 @@ router.get('/gender/:gender', async (req, res) => {
       JOIN product_variants v ON v.product_id = p.id
       LEFT JOIN LATERAL (
         SELECT ean_code FROM barcodes b WHERE b.variant_id = v.id ORDER BY id ASC LIMIT 1
-      ) bc ON TRUE
-      LEFT JOIN product_images pi ON pi.ean_code = bc.ean_code
+      ) bc_self ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT b2.ean_code
+        FROM product_variants v2
+        JOIN products p2 ON p2.id = v2.product_id
+        JOIN barcodes b2 ON b2.variant_id = v2.id
+        WHERE p2.name = p.name AND p2.brand_name = p.brand_name AND v2.size = v.size AND v2.colour = v.colour
+        ORDER BY b2.id ASC
+        LIMIT 1
+      ) bc_any ON TRUE
+      LEFT JOIN product_images pi ON pi.ean_code = COALESCE(bc_self.ean_code, bc_any.ean_code)
       WHERE ${where}
       ORDER BY v.id DESC
     `;
@@ -234,12 +263,12 @@ router.get('/search', async (req, res) => {
          v.mrp::numeric AS mrp,
          v.sale_price::numeric AS sale_price,
          COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
-         COALESCE(bc.ean_code,'') AS ean_code,
+         COALESCE(bc_self.ean_code, bc_any.ean_code, '') AS ean_code,
          COALESCE(
            NULLIF(v.image_url, ''),
            NULLIF(pi.image_url, ''),
            CASE
-             WHEN COALESCE(bc.ean_code,'') <> '' THEN CONCAT('https://res.cloudinary.com/', $2::text, '/image/upload/f_auto,q_auto/products/', bc.ean_code)
+             WHEN COALESCE(bc_self.ean_code, bc_any.ean_code, '') <> '' THEN CONCAT('https://res.cloudinary.com/', $2::text, '/image/upload/f_auto,q_auto/products/', COALESCE(bc_self.ean_code, bc_any.ean_code))
              ELSE NULL
            END,
            CASE
@@ -253,8 +282,17 @@ router.get('/search', async (req, res) => {
        JOIN product_variants v ON v.product_id = p.id
        LEFT JOIN LATERAL (
          SELECT ean_code FROM barcodes b WHERE b.variant_id = v.id ORDER BY id ASC LIMIT 1
-       ) bc ON TRUE
-       LEFT JOIN product_images pi ON pi.ean_code = bc.ean_code
+       ) bc_self ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT b2.ean_code
+         FROM product_variants v2
+         JOIN products p2 ON p2.id = v2.product_id
+         JOIN barcodes b2 ON b2.variant_id = v2.id
+         WHERE p2.name = p.name AND p2.brand_name = p.brand_name AND v2.size = v.size AND v2.colour = v.colour
+         ORDER BY b2.id ASC
+         LIMIT 1
+       ) bc_any ON TRUE
+       LEFT JOIN product_images pi ON pi.ean_code = COALESCE(bc_self.ean_code, bc_any.ean_code)
        WHERE v.is_active = TRUE
          AND (
            p.name ILIKE $1
@@ -290,12 +328,12 @@ router.get('/:id(\\d+)', async (req, res) => {
          v.mrp::numeric AS mrp,
          v.sale_price::numeric AS sale_price,
          COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
-         COALESCE(bc.ean_code,'') AS ean_code,
+         COALESCE(bc_self.ean_code, bc_any.ean_code, '') AS ean_code,
          COALESCE(
            NULLIF(v.image_url, ''),
            NULLIF(pi.image_url, ''),
            CASE
-             WHEN COALESCE(bc.ean_code,'') <> '' THEN CONCAT('https://res.cloudinary.com/', $2::text, '/image/upload/f_auto,q_auto/products/', bc.ean_code)
+             WHEN COALESCE(bc_self.ean_code, bc_any.ean_code, '') <> '' THEN CONCAT('https://res.cloudinary.com/', $2::text, '/image/upload/f_auto,q_auto/products/', COALESCE(bc_self.ean_code, bc_any.ean_code))
              ELSE NULL
            END,
            CASE
@@ -309,8 +347,17 @@ router.get('/:id(\\d+)', async (req, res) => {
        JOIN product_variants v ON v.product_id = p.id
        LEFT JOIN LATERAL (
          SELECT ean_code FROM barcodes b WHERE b.variant_id = v.id ORDER BY id ASC LIMIT 1
-       ) bc ON TRUE
-       LEFT JOIN product_images pi ON pi.ean_code = bc.ean_code
+       ) bc_self ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT b2.ean_code
+         FROM product_variants v2
+         JOIN products p2 ON p2.id = v2.product_id
+         JOIN barcodes b2 ON b2.variant_id = v2.id
+         WHERE p2.name = p.name AND p2.brand_name = p.brand_name AND v2.size = v.size AND v2.colour = v.colour
+         ORDER BY b2.id ASC
+         LIMIT 1
+       ) bc_any ON TRUE
+       LEFT JOIN product_images pi ON pi.ean_code = COALESCE(bc_self.ean_code, bc_any.ean_code)
        WHERE v.id = $1`,
       [req.params.id, cloud]
     );
