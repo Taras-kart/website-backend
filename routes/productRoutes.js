@@ -22,6 +22,82 @@ function addHasImageWhere(whereSql) {
   `;
 }
 
+async function fetchImageList({ gender, limit }) {
+  const params = [];
+  let where = 'v.is_active = TRUE';
+  if (gender) {
+    params.push(gender);
+    where += ` AND p.gender = $${params.length}`;
+  }
+  where = addHasImageWhere(where);
+  const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh';
+  params.push(cloud);
+  const cloudIdx = params.length;
+  params.push(limit);
+  const limIdx = params.length;
+
+  const sql = `
+    WITH base AS (
+      SELECT
+        v.id AS id,
+        p.id AS product_id,
+        p.name AS product_name,
+        p.brand_name AS brand,
+        p.gender AS gender,
+        v.colour AS color,
+        v.size AS size,
+        COALESCE(bc_self.ean_code, bc_any.ean_code, '') AS ean_code,
+        v.image_url AS v_image,
+        pi.image_url AS pi_image
+      FROM products p
+      JOIN product_variants v ON v.product_id = p.id
+      LEFT JOIN LATERAL (
+        SELECT ean_code FROM barcodes b WHERE b.variant_id = v.id ORDER BY id ASC LIMIT 1
+      ) bc_self ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT b2.ean_code
+        FROM product_variants v2
+        JOIN products p2 ON p2.id = v2.product_id
+        JOIN barcodes b2 ON b2.variant_id = v2.id
+        WHERE p2.name = p.name AND p2.brand_name = p.brand_name AND v2.size = v.size AND v2.colour = v.colour
+        ORDER BY b2.id ASC
+        LIMIT 1
+      ) bc_any ON TRUE
+      LEFT JOIN product_images pi ON pi.ean_code = COALESCE(bc_self.ean_code, bc_any.ean_code)
+      WHERE ${where}
+    )
+    SELECT
+      id,
+      product_id,
+      product_name,
+      brand,
+      gender,
+      color,
+      size,
+      COALESCE(
+        NULLIF(v_image,''),
+        NULLIF(pi_image,''),
+        CASE
+          WHEN ean_code <> '' THEN CONCAT('https://res.cloudinary.com/', $${cloudIdx}::text, '/image/upload/f_auto,q_auto/products/', ean_code)
+          ELSE NULL
+        END
+      ) AS image_url
+    FROM base
+    WHERE COALESCE(
+      NULLIF(v_image,''),
+      NULLIF(pi_image,''),
+      CASE
+        WHEN ean_code <> '' THEN CONCAT('https://res.cloudinary.com/', $${cloudIdx}::text, '/image/upload/f_auto,q_auto/products/', ean_code)
+        ELSE NULL
+      END
+    ) IS NOT NULL
+    ORDER BY RANDOM()
+    LIMIT $${limIdx}
+  `;
+  const { rows } = await pool.query(sql, params);
+  return rows;
+}
+
 router.get('/', async (req, res) => {
   try {
     const genderQ = toGender(req.query.gender || req.query.category || '');
@@ -342,74 +418,22 @@ router.get('/search', async (req, res) => {
 router.get('/hero-images', async (req, res) => {
   try {
     const limit = Math.max(1, Math.min(120, parseInt(req.query.limit || '60', 10)));
-    const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh';
-    const { rows } = await pool.query(
-      `
-      WITH base AS (
-        SELECT
-          v.id AS id,
-          p.id AS product_id,
-          p.name AS product_name,
-          p.brand_name AS brand,
-          p.gender AS gender,
-          v.colour AS color,
-          v.size AS size,
-          COALESCE(bc_self.ean_code, bc_any.ean_code, '') AS ean_code,
-          v.image_url AS v_image,
-          pi.image_url AS pi_image
-        FROM products p
-        JOIN product_variants v ON v.product_id = p.id
-        LEFT JOIN LATERAL (
-          SELECT ean_code FROM barcodes b WHERE b.variant_id = v.id ORDER BY id ASC LIMIT 1
-        ) bc_self ON TRUE
-        LEFT JOIN LATERAL (
-          SELECT b2.ean_code
-          FROM product_variants v2
-          JOIN products p2 ON p2.id = v2.product_id
-          JOIN barcodes b2 ON b2.variant_id = v2.id
-          WHERE p2.name = p.name AND p2.brand_name = p.brand_name AND v2.size = v.size AND v2.colour = v.colour
-          ORDER BY b2.id ASC
-          LIMIT 1
-        ) bc_any ON TRUE
-        LEFT JOIN product_images pi ON pi.ean_code = COALESCE(bc_self.ean_code, bc_any.ean_code)
-        WHERE v.is_active = TRUE
-          AND (
-            (NULLIF(v.image_url,'') IS NOT NULL AND v.image_url NOT LIKE '/images/%')
-            OR (NULLIF(pi.image_url,'') IS NOT NULL AND pi.image_url NOT LIKE '/images/%')
-            OR COALESCE(bc_self.ean_code, bc_any.ean_code, '') <> ''
-          )
-      )
-      SELECT
-        id,
-        product_id,
-        product_name,
-        brand,
-        gender,
-        color,
-        size,
-        COALESCE(
-          NULLIF(v_image,''),
-          NULLIF(pi_image,''),
-          CASE
-            WHEN ean_code <> '' THEN CONCAT('https://res.cloudinary.com/', $1::text, '/image/upload/f_auto,q_auto/products/', ean_code)
-            ELSE NULL
-          END
-        ) AS image_url
-      FROM base
-      WHERE COALESCE(
-        NULLIF(v_image,''),
-        NULLIF(pi_image,''),
-        CASE
-          WHEN ean_code <> '' THEN CONCAT('https://res.cloudinary.com/', $1::text, '/image/upload/f_auto,q_auto/products/', ean_code)
-          ELSE NULL
-        END
-      ) IS NOT NULL
-      ORDER BY RANDOM()
-      LIMIT $2
-      `,
-      [cloud, limit]
-    );
+    const rows = await fetchImageList({ gender: null, limit });
     res.json(rows);
+  } catch (err) {
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+});
+
+router.get('/section-images', async (req, res) => {
+  try {
+    const limitHero = Math.max(1, Math.min(120, parseInt(req.query.limitHero || '30', 10)));
+    const limitGender = Math.max(1, Math.min(80, parseInt(req.query.limitGender || '40', 10)));
+    const hero = await fetchImageList({ gender: null, limit: limitHero });
+    const women = await fetchImageList({ gender: 'WOMEN', limit: limitGender });
+    const men = await fetchImageList({ gender: 'MEN', limit: limitGender });
+    const kids = await fetchImageList({ gender: 'KIDS', limit: limitGender });
+    res.json({ hero, women, men, kids });
   } catch (err) {
     res.status(500).json({ message: 'Server error', error: err.message });
   }
