@@ -1,21 +1,22 @@
+// D:\shopping-backend\db.js
 require('dotenv').config();
 const { Pool } = require('pg');
 
-const connectionString = process.env.DATABASE_URL || '';
+const CONNECTION_STRING =
+  process.env.DATABASE_URL ||
+  process.env.POSTGRES_URL ||
+  process.env.POSTGRES_PRISMA_URL ||
+  process.env.SUPABASE_DB_URL ||
+  '';
 
-const sslOption =
-  connectionString.includes('sslmode=require')
-    ? true
-    : { rejectUnauthorized: false };
-
-if (!global.pgPool) {
-  global.pgPool = new Pool({
-    connectionString,
-    ssl: sslOption,
-    max: 5,
-    idleTimeoutMillis: 10_000,
-    connectionTimeoutMillis: 5_000,
+if (!global._pgPool) {
+  global._pgPool = new Pool({
+    connectionString: CONNECTION_STRING,
+    ssl: { require: true, rejectUnauthorized: false },
+    max: 3,
+    idleTimeoutMillis: 10000,
+    connectionTimeoutMillis: 10000
   });
 }
 
-module.exports = global.pgPool;
+module.exports = global._pgPool;
