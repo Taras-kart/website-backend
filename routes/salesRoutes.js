@@ -1,4 +1,3 @@
-// routes/salesRoutes.js
 const express = require('express');
 const pool = require('../db');
 const { requireAuth } = require('../middleware/auth');
@@ -106,7 +105,7 @@ router.get('/web/:id', async (req, res) => {
   try {
     const s = await pool.query('SELECT * FROM sales WHERE id = $1::uuid', [id]);
     if (!s.rowCount) return res.status(404).json({ message: 'Not found' });
-    const items = await pool.query('SELECT * FROM sale_items WHERE sale_id = $1::uuid ORDER BY id', [id]);
+    const items = await pool.query('SELECT * FROM sale_items WHERE sale_id = $1::uuid', [id]);
     return res.json({ sale: s.rows[0], items: items.rows });
   } catch (e) {
     console.error('GET /api/sales/web/:id error:', e?.message || e);
