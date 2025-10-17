@@ -66,4 +66,20 @@ app.get('/api/debug/blob-env', (req, res) => {
 
 app.use((req, res) => res.status(404).send('Not found'));
 
+app.get('/api/debug/jwt', (req, res) => {
+  res.json({ jwtSecretPresent: Boolean(process.env.JWT_SECRET) });
+});
+
+app.get('/api/debug/db', async (req, res) => {
+  const pool = require('./db');
+  try {
+    const r1 = await pool.query('SELECT 1 as ok');
+    const r2 = await pool.query('SELECT COUNT(*)::int AS n FROM users');
+    res.json({ dbOk: r1.rows[0].ok === 1, usersCount: r2.rows[0].n });
+  } catch (e) {
+    res.status(500).json({ dbOk: false, error: String(e && e.message || e) });
+  }
+});
+
+
 module.exports = app;
