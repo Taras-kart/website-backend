@@ -1,3 +1,4 @@
+// routes/salesRoutes.js
 const express = require('express');
 const pool = require('../db');
 const { requireAuth } = require('../middleware/auth');
@@ -44,7 +45,7 @@ router.post('/web/place', async (req, res) => {
       `INSERT INTO sales
          (source, customer_email, customer_name, customer_mobile, shipping_address, status, payment_status, totals, branch_id, total)
        VALUES
-         ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+         ($1,$2,$3,$4,$5::jsonb,$6,$7,$8::jsonb,$9,$10)
        RETURNING id`,
       [
         'WEB',
@@ -54,15 +55,9 @@ router.post('/web/place', async (req, res) => {
         shipping_address ? JSON.stringify(shipping_address) : null,
         'PLACED',
         payment_status || 'COD',
-        totals ? JSON.stringify(totals) : JSON.stringify({
-          bagTotal,
-          discountTotal,
-          couponPct,
-          couponDiscount,
-          convenience,
-          giftWrap,
-          payable
-        }),
+        totals
+          ? JSON.stringify(totals)
+          : JSON.stringify({ bagTotal, discountTotal, couponPct, couponDiscount, convenience, giftWrap, payable }),
         branch_id || null,
         payable
       ]
@@ -75,7 +70,7 @@ router.post('/web/place', async (req, res) => {
         `INSERT INTO sale_items
            (sale_id, variant_id, qty, price, mrp, size, colour, image_url, ean_code)
          VALUES
-           ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+           ($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9)`,
         [
           saleId,
           Number(it?.variant_id ?? it?.product_id),
@@ -122,7 +117,7 @@ router.get('/web/:id', async (req, res) => {
 router.get('/web', async (_req, res) => {
   try {
     const list = await pool.query(
-      'SELECT * FROM sales WHERE source = $1 ORDER BY id DESC LIMIT 50',
+      'SELECT * FROM sales WHERE source = $1 ORDER BY created_at DESC NULLS LAST, id DESC LIMIT 50',
       ['WEB']
     );
     return res.json(list.rows);
