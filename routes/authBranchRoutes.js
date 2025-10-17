@@ -37,6 +37,7 @@ router.post('/login', async (req, res) => {
 });
 
 router.get('/me', requireAuth, async (req, res) => {
+  
   try {
     const { rows } = await pool.query(
       'SELECT id, username, role_enum, branch_id, last_login FROM users WHERE id = $1',
