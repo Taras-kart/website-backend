@@ -12,10 +12,12 @@ const defaultOrigins = [
   'https://taras-kart-shopping-mall.vercel.app',
   'https://taras-kart-admin.vercel.app'
 ];
+
 const envOrigins = (process.env.CORS_ORIGINS || '')
   .split(',')
   .map(s => s.trim())
   .filter(Boolean);
+
 const allowedOrigins = envOrigins.length ? envOrigins : defaultOrigins;
 
 const corsOptions = {
@@ -32,7 +34,6 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
-
 app.use(express.json());
 
 app.use('/api/upload', require('./routes/uploadRoutes'));
@@ -64,18 +65,6 @@ app.get('/api/debug/blob-env', (req, res) => {
   });
 });
 
-app.use((req, res) => res.status(404).send('Not found'));
-
-app.get('/api/debug/blob-env', (req, res) => {
-  res.json({
-    hasToken: Boolean(
-      process.env.BLOB_READ_WRITE_TOKEN ||
-      process.env.VERCEL_BLOB_READ_WRITE_TOKEN ||
-      process.env.VERCEL_BLOB_RW_TOKEN
-    )
-  });
-});
-
 app.get('/api/debug/jwt', (req, res) => {
   res.json({ jwtSecretPresent: Boolean(process.env.JWT_SECRET) });
 });
@@ -92,6 +81,5 @@ app.get('/api/debug/db', async (req, res) => {
 });
 
 app.use((req, res) => res.status(404).send('Not found'));
-
 
 module.exports = app;
