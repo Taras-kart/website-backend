@@ -1,3 +1,4 @@
+// D:\shopping-backend\routes\salesRoutes.js
 const express = require('express');
 const pool = require('../db');
 const { requireAuth } = require('../middleware/auth');
@@ -42,17 +43,17 @@ router.post('/web/place', async (req, res) => {
     const inserted = await client.query(
       `INSERT INTO sales
        (source, customer_email, customer_name, customer_mobile, shipping_address, status, payment_status, totals, branch_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8::jsonb,$9)
        RETURNING id`,
       [
         'WEB',
         customer_email || null,
         customer_name || null,
         customer_mobile || null,
-        shipping_address || null,
+        shipping_address ? JSON.stringify(shipping_address) : null,
         'PLACED',
         payment_status || 'COD',
-        {
+        JSON.stringify({
           bagTotal,
           discountTotal,
           couponPct,
@@ -60,7 +61,7 @@ router.post('/web/place', async (req, res) => {
           convenience,
           giftWrap,
           payable
-        },
+        }),
         branch_id || null
       ]
     );
@@ -78,8 +79,8 @@ router.post('/web/place', async (req, res) => {
           Number(it.qty || 1),
           Number(it.price || 0),
           it.mrp != null ? Number(it.mrp) : null,
-          it.size || null,
-          it.colour || it.color || null,
+          it.size || it.selected_size || null,
+          it.colour || it.color || it.selected_color || null,
           it.image_url || null,
           it.ean_code || it.barcode_value || null
         ]
@@ -87,7 +88,11 @@ router.post('/web/place', async (req, res) => {
     }
 
     await client.query('COMMIT');
-    res.json({ id: saleId, status: 'PLACED', totals: { bagTotal, discountTotal, couponPct, couponDiscount, convenience, giftWrap, payable } });
+    res.json({
+      id: saleId,
+      status: 'PLACED',
+      totals: { bagTotal, discountTotal, couponPct, couponDiscount, convenience, giftWrap, payable }
+    });
   } catch (e) {
     await client.query('ROLLBACK');
     res.status(500).json({ message: 'Server error' });
