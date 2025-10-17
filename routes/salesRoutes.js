@@ -16,7 +16,7 @@ router.post('/web/place', async (req, res) => {
     payment_status
   } = req.body || {};
 
-  if (!Array.isArray(items) || !items.length) {
+  if (!Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ message: 'items required' });
   }
 
@@ -27,23 +27,24 @@ router.post('/web/place', async (req, res) => {
     let bagTotal = 0;
     let discountTotal = 0;
     for (const it of items) {
-      const mrp = Number(it.mrp || it.price || 0);
-      const price = Number(it.price || 0);
-      const qty = Number(it.qty || 1);
+      const mrp = Number(it?.mrp ?? it?.price ?? 0);
+      const price = Number(it?.price ?? 0);
+      const qty = Number(it?.qty ?? 1);
       bagTotal += mrp * qty;
       discountTotal += Math.max(mrp - price, 0) * qty;
     }
 
-    const couponPct = Number(totals?.couponPct || 0);
+    const couponPct = Number(totals?.couponPct ?? 0);
     const couponDiscount = Math.floor(((bagTotal - discountTotal) * couponPct) / 100);
-    const convenience = Number(totals?.convenience || 0);
-    const giftWrap = Number(totals?.giftWrap || 0);
+    const convenience = Number(totals?.convenience ?? 0);
+    const giftWrap = Number(totals?.giftWrap ?? 0);
     const payable = bagTotal - discountTotal - couponDiscount + convenience + giftWrap;
 
     const inserted = await client.query(
       `INSERT INTO sales
-       (source, customer_email, customer_name, customer_mobile, shipping_address, status, payment_status, totals, branch_id, total)
-       VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8::jsonb,$9,$10)
+         (source, customer_email, customer_name, customer_mobile, shipping_address, status, payment_status, totals, branch_id, total)
+       VALUES
+         ($1,$2,$3,$4,$5::jsonb,$6,$7,$8::jsonb,$9,$10)
        RETURNING id`,
       [
         'WEB',
@@ -72,55 +73,62 @@ router.post('/web/place', async (req, res) => {
     for (const it of items) {
       await client.query(
         `INSERT INTO sale_items
-         (sale_id, variant_id, qty, price, mrp, size, colour, image_url, ean_code)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+           (sale_id, variant_id, qty, price, mrp, size, colour, image_url, ean_code)
+         VALUES
+           ($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9)`,
         [
           saleId,
-          Number(it.variant_id || it.product_id),
-          Number(it.qty || 1),
-          Number(it.price || 0),
-          it.mrp != null ? Number(it.mrp) : null,
-          it.size || it.selected_size || null,
-          it.colour || it.color || it.selected_color || null,
-          it.image_url || null,
-          it.ean_code || it.barcode_value || null
+          Number(it?.variant_id ?? it?.product_id),
+          Number(it?.qty ?? 1),
+          Number(it?.price ?? 0),
+          it?.mrp != null ? Number(it.mrp) : null,
+          it?.size ?? it?.selected_size ?? null,
+          it?.colour ?? it?.color ?? it?.selected_color ?? null,
+          it?.image_url ?? null,
+          it?.ean_code ?? it?.barcode_value ?? null
         ]
       );
     }
 
     await client.query('COMMIT');
-    res.json({
+    return res.json({
       id: saleId,
       status: 'PLACED',
       totals: { bagTotal, discountTotal, couponPct, couponDiscount, convenience, giftWrap, payable }
     });
   } catch (e) {
     await client.query('ROLLBACK');
-    res.status(500).json({ message: 'Server error' });
+    console.error('POST /api/sales/web/place error:', e?.message || e);
+    return res.status(500).json({ message: 'Server error' });
   } finally {
     client.release();
   }
 });
 
 router.get('/web/:id', async (req, res) => {
-  const id = Number(req.params.id);
+  const id = String(req.params.id || '').trim();
   if (!id) return res.status(400).json({ message: 'id required' });
   try {
-    const s = await pool.query('SELECT * FROM sales WHERE id = $1', [id]);
+    const s = await pool.query('SELECT * FROM sales WHERE id = $1::uuid', [id]);
     if (!s.rowCount) return res.status(404).json({ message: 'Not found' });
-    const items = await pool.query('SELECT * FROM sale_items WHERE sale_id = $1 ORDER BY id', [id]);
-    res.json({ sale: s.rows[0], items: items.rows });
-  } catch {
-    res.status(500).json({ message: 'Server error' });
+    const items = await pool.query('SELECT * FROM sale_items WHERE sale_id = $1::uuid ORDER BY id', [id]);
+    return res.json({ sale: s.rows[0], items: items.rows });
+  } catch (e) {
+    console.error('GET /api/sales/web/:id error:', e?.message || e);
+    return res.status(500).json({ message: 'Server error' });
   }
 });
 
-router.get('/web', async (req, res) => {
+router.get('/web', async (_req, res) => {
   try {
-    const list = await pool.query('SELECT * FROM sales WHERE source = $1 ORDER BY id DESC LIMIT 50', ['WEB']);
-    res.json(list.rows);
-  } catch {
-    res.status(500).json({ message: 'Server error' });
+    const list = await pool.query(
+      'SELECT * FROM sales WHERE source = $1 ORDER BY created_at DESC NULLS LAST, id DESC LIMIT 50',
+      ['WEB']
+    );
+    return res.json(list.rows);
+  } catch (e) {
+    console.error('GET /api/sales/web error:', e?.message || e);
+    return res.status(500).json({ message: 'Server error' });
   }
 });
 
@@ -137,28 +145,33 @@ router.post('/confirm', requireAuth, async (req, res) => {
 
     const idem = await client.query('SELECT key FROM idempotency_keys WHERE key = $1', [client_action_id]);
     if (idem.rowCount) {
-      const s = await client.query('SELECT id, status, total FROM sales WHERE id = $1', [sale_id]);
+      const s = await client.query('SELECT id, status, total FROM sales WHERE id = $1::uuid', [sale_id]);
       await client.query('COMMIT');
-      return res.json({ id: sale_id, status: s.rows[0]?.status || 'confirmed', total: s.rows[0]?.total || 0, idempotent: true });
+      return res.json({
+        id: sale_id,
+        status: s.rows[0]?.status || 'confirmed',
+        total: s.rows[0]?.total || 0,
+        idempotent: true
+      });
     }
 
     let total = 0;
-    for (const it of items) total += Number(it.qty || 0) * Number(it.price || 0);
+    for (const it of items) total += Number(it?.qty ?? 0) * Number(it?.price ?? 0);
 
-    const s0 = await client.query('SELECT id FROM sales WHERE id = $1', [sale_id]);
+    const s0 = await client.query('SELECT id FROM sales WHERE id = $1::uuid', [sale_id]);
     if (!s0.rowCount) {
       await client.query(
         `INSERT INTO sales (id, branch_id, status, total, payment_method, payment_ref)
-         VALUES ($1,$2,'pending',$3,$4,$5)`,
+         VALUES ($1::uuid,$2,'pending',$3,$4,$5)`,
         [sale_id, branchId, total, payment?.method || null, payment?.ref || null]
       );
     } else {
-      await client.query('UPDATE sales SET total = $2 WHERE id = $1', [sale_id, total]);
+      await client.query('UPDATE sales SET total = $2 WHERE id = $1::uuid', [sale_id, total]);
     }
 
     for (const it of items) {
-      const vId = Number(it.variant_id || it.product_id);
-      const qty = Number(it.qty || 0);
+      const vId = Number(it?.variant_id ?? it?.product_id);
+      const qty = Number(it?.qty ?? 0);
       const s1 = await client.query(
         'SELECT on_hand, reserved FROM branch_variant_stock WHERE branch_id = $1 AND variant_id = $2 FOR UPDATE',
         [branchId, vId]
@@ -173,22 +186,29 @@ router.post('/confirm', requireAuth, async (req, res) => {
       );
     }
 
-    await client.query('DELETE FROM sale_items WHERE sale_id = $1', [sale_id]);
+    await client.query('DELETE FROM sale_items WHERE sale_id = $1::uuid', [sale_id]);
     for (const it of items) {
       await client.query(
-        'INSERT INTO sale_items (sale_id, variant_id, ean_code, qty, price) VALUES ($1,$2,$3,$4,$5)',
-        [sale_id, Number(it.variant_id || it.product_id), it.barcode_value || it.ean_code || null, Number(it.qty || 0), Number(it.price || 0)]
+        'INSERT INTO sale_items (sale_id, variant_id, ean_code, qty, price) VALUES ($1::uuid,$2,$3,$4,$5)',
+        [
+          sale_id,
+          Number(it?.variant_id ?? it?.product_id),
+          it?.barcode_value ?? it?.ean_code ?? null,
+          Number(it?.qty ?? 0),
+          Number(it?.price ?? 0)
+        ]
       );
     }
 
-    await client.query('UPDATE sales SET status = $2 WHERE id = $1', [sale_id, 'confirmed']);
+    await client.query('UPDATE sales SET status = $2 WHERE id = $1::uuid', [sale_id, 'confirmed']);
     await client.query('INSERT INTO idempotency_keys (key) VALUES ($1)', [client_action_id]);
 
     await client.query('COMMIT');
-    res.json({ id: sale_id, status: 'confirmed', total });
+    return res.json({ id: sale_id, status: 'confirmed', total });
   } catch (e) {
     await client.query('ROLLBACK');
-    res.status(500).json({ message: 'Server error' });
+    console.error('POST /api/sales/confirm error:', e?.message || e);
+    return res.status(500).json({ message: 'Server error' });
   } finally {
     client.release();
   }
