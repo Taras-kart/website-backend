@@ -1,7 +1,7 @@
-// D:\shopping-backend\routes\salesRoutes.js
 const express = require('express');
 const pool = require('../db');
 const { requireAuth } = require('../middleware/auth');
+
 const router = express.Router();
 
 router.post('/web/place', async (req, res) => {
@@ -42,8 +42,8 @@ router.post('/web/place', async (req, res) => {
 
     const inserted = await client.query(
       `INSERT INTO sales
-       (source, customer_email, customer_name, customer_mobile, shipping_address, status, payment_status, totals, branch_id)
-       VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8::jsonb,$9)
+       (source, customer_email, customer_name, customer_mobile, shipping_address, status, payment_status, totals, branch_id, total)
+       VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8::jsonb,$9,$10)
        RETURNING id`,
       [
         'WEB',
@@ -62,7 +62,8 @@ router.post('/web/place', async (req, res) => {
           giftWrap,
           payable
         }),
-        branch_id || null
+        branch_id || null,
+        payable
       ]
     );
 
