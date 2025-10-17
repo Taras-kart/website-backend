@@ -80,6 +80,7 @@ app.get('/api/debug/db', async (req, res) => {
   }
 });
 
+
 app.use((req, res) => res.status(404).send('Not found'));
 
 module.exports = app;
