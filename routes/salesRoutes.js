@@ -1,20 +1,20 @@
-const express = require('express');
-const pool = require('../db');
-const { requireAuth } = require('../middleware/auth');
+const express = require('express')
+const pool = require('../db')
+const { requireAuth } = require('../middleware/auth')
 
-const router = express.Router();
+const router = express.Router()
 
 async function salesHasUserId(client) {
   const r = await client.query(
     "SELECT 1 FROM information_schema.columns WHERE table_name='sales' AND column_name='user_id' LIMIT 1"
-  );
-  return !!r.rowCount;
+  )
+  return !!r.rowCount
 }
 
 async function findUserId(client, { login_email }) {
-  if (!login_email) return null;
-  const q = await client.query('SELECT id FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1', [login_email]);
-  return q.rowCount ? q.rows[0].id : null;
+  if (!login_email) return null
+  const q = await client.query('SELECT id FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1', [login_email])
+  return q.rowCount ? q.rows[0].id : null
 }
 
 router.post('/web/place', async (req, res) => {
@@ -28,42 +28,34 @@ router.post('/web/place', async (req, res) => {
     branch_id,
     payment_status,
     login_email
-  } = req.body || {};
-
+  } = req.body || {}
   if (!Array.isArray(items) || items.length === 0) {
-    return res.status(400).json({ message: 'items required' });
+    return res.status(400).json({ message: 'items required' })
   }
-
-  const client = await pool.connect();
+  const client = await pool.connect()
   try {
-    await client.query('BEGIN');
-
-    let bagTotal = 0;
-    let discountTotal = 0;
+    await client.query('BEGIN')
+    let bagTotal = 0
+    let discountTotal = 0
     for (const it of items) {
-      const mrp = Number(it?.mrp ?? it?.price ?? 0);
-      const price = Number(it?.price ?? 0);
-      const qty = Number(it?.qty ?? 1);
-      bagTotal += mrp * qty;
-      discountTotal += Math.max(mrp - price, 0) * qty;
+      const mrp = Number(it?.mrp ?? it?.price ?? 0)
+      const price = Number(it?.price ?? 0)
+      const qty = Number(it?.qty ?? 1)
+      bagTotal += mrp * qty
+      discountTotal += Math.max(mrp - price, 0) * qty
     }
-
-    const couponPct = Number(totals?.couponPct ?? 0);
-    const couponDiscount = Math.floor(((bagTotal - discountTotal) * couponPct) / 100);
-    const convenience = Number(totals?.convenience ?? 0);
-    const giftWrap = Number(totals?.giftWrap ?? 0);
-    const payable = bagTotal - discountTotal - couponDiscount + convenience + giftWrap;
-
-    const hasUser = await salesHasUserId(client);
-    const resolvedUserId = hasUser ? await findUserId(client, { login_email }) : null;
-
+    const couponPct = Number(totals?.couponPct ?? 0)
+    const couponDiscount = Math.floor(((bagTotal - discountTotal) * couponPct) / 100)
+    const convenience = Number(totals?.convenience ?? 0)
+    const giftWrap = Number(totals?.giftWrap ?? 0)
+    const payable = bagTotal - discountTotal - couponDiscount + convenience + giftWrap
+    const hasUser = await salesHasUserId(client)
+    const resolvedUserId = hasUser ? await findUserId(client, { login_email }) : null
     const baseTotals = totals
       ? JSON.stringify(totals)
-      : JSON.stringify({ bagTotal, discountTotal, couponPct, couponDiscount, convenience, giftWrap, payable });
-
-    const storedEmail = login_email || customer_email || null;
-
-    let query, params;
+      : JSON.stringify({ bagTotal, discountTotal, couponPct, couponDiscount, convenience, giftWrap, payable })
+    const storedEmail = login_email || customer_email || null
+    let query, params
     if (hasUser) {
       query = `
         INSERT INTO sales
@@ -71,11 +63,11 @@ router.post('/web/place', async (req, res) => {
         VALUES
         ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9::jsonb, $10, $11)
         RETURNING id
-      `;
+      `
       params = [
         'WEB',
         resolvedUserId,
-        storedEmail, // Always store login email
+        storedEmail,
         customer_name || null,
         customer_mobile || null,
         shipping_address ? JSON.stringify(shipping_address) : null,
@@ -84,7 +76,7 @@ router.post('/web/place', async (req, res) => {
         baseTotals,
         branch_id || null,
         payable
-      ];
+      ]
     } else {
       query = `
         INSERT INTO sales
@@ -92,7 +84,7 @@ router.post('/web/place', async (req, res) => {
         VALUES
         ($1, $2, $3, $4, $5::jsonb, $6, $7, $8::jsonb, $9, $10)
         RETURNING id
-      `;
+      `
       params = [
         'WEB',
         storedEmail,
@@ -104,12 +96,10 @@ router.post('/web/place', async (req, res) => {
         baseTotals,
         branch_id || null,
         payable
-      ];
+      ]
     }
-
-    const inserted = await client.query(query, params);
-    const saleId = inserted.rows[0].id;
-
+    const inserted = await client.query(query, params)
+    const saleId = inserted.rows[0].id
     for (const it of items) {
       await client.query(
         `INSERT INTO sale_items
@@ -127,51 +117,55 @@ router.post('/web/place', async (req, res) => {
           it?.image_url ?? null,
           it?.ean_code ?? it?.barcode_value ?? null
         ]
-      );
+      )
     }
-
-    await client.query('COMMIT');
+    await client.query('COMMIT')
     return res.json({
       id: saleId,
       status: 'PLACED',
       totals: { bagTotal, discountTotal, couponPct, couponDiscount, convenience, giftWrap, payable }
-    });
+    })
   } catch (e) {
-    await client.query('ROLLBACK');
-    console.error('POST /api/sales/web/place error:', e);
-    return res.status(500).json({ message: 'Server error' });
+    await client.query('ROLLBACK')
+    console.error('POST /api/sales/web/place error:', e)
+    return res.status(500).json({ message: 'Server error' })
   } finally {
-    client.release();
+    client.release()
   }
-});
+})
 
 router.get('/web/by-user', async (req, res) => {
-  const client = await pool.connect();
+  const client = await pool.connect()
   try {
-    const email = String(req.query.email || '').trim().toLowerCase();
-    if (!email) return res.status(400).json({ message: 'email required' });
-
-    const hasUser = await salesHasUserId(client);
-
-    const userQ = await client.query('SELECT id FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1', [email]);
-    const userId = userQ.rowCount ? userQ.rows[0].id : null;
-
-    if (!userId) return res.json([]);
-
-    const salesQ = await client.query(
-      `SELECT id, status, payment_status, created_at, totals, branch_id, customer_name, customer_email, customer_mobile
-       FROM sales
-       WHERE source = 'WEB' AND ${hasUser ? 'user_id = $1' : 'LOWER(customer_email) = LOWER($2)'}
-       ORDER BY created_at DESC NULLS LAST, id DESC
-       LIMIT 200`,
-      hasUser ? [userId] : [null, email]
-    );
-
-    if (salesQ.rowCount === 0) return res.json([]);
-
-    const ids = salesQ.rows.map((r) => r.id);
-    const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh';
-
+    const email = String(req.query.email || '').trim().toLowerCase()
+    if (!email) return res.status(400).json({ message: 'email required' })
+    const hasUser = await salesHasUserId(client)
+    const userQ = await client.query('SELECT id FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1', [email])
+    const userId = userQ.rowCount ? userQ.rows[0].id : null
+    if (!userId) return res.json([])
+    let salesQ
+    if (hasUser) {
+      salesQ = await client.query(
+        `SELECT id, status, payment_status, created_at, totals, branch_id, customer_name, customer_email, customer_mobile
+         FROM sales
+         WHERE source = 'WEB' AND user_id = $1
+         ORDER BY created_at DESC NULLS LAST, id DESC
+         LIMIT 200`,
+        [userId]
+      )
+    } else {
+      salesQ = await client.query(
+        `SELECT id, status, payment_status, created_at, totals, branch_id, customer_name, customer_email, customer_mobile
+         FROM sales
+         WHERE source = 'WEB' AND LOWER(customer_email) = LOWER($1)
+         ORDER BY created_at DESC NULLS LAST, id DESC
+         LIMIT 200`,
+        [email]
+      )
+    }
+    if (salesQ.rowCount === 0) return res.json([])
+    const ids = salesQ.rows.map((r) => r.id)
+    const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh'
     const itemsQ = await client.query(
       `SELECT
          si.sale_id, si.variant_id, si.qty, si.price, si.mrp, si.size, si.colour, si.ean_code,
@@ -187,22 +181,20 @@ router.get('/web/by-user', async (req, res) => {
        LEFT JOIN product_images pi ON pi.ean_code = si.ean_code
        WHERE si.sale_id = ANY($1::uuid[])`,
       [ids, cloud]
-    );
-
-    const bySale = new Map();
-    for (const s of salesQ.rows) bySale.set(s.id, { ...s, items: [] });
+    )
+    const bySale = new Map()
+    for (const s of salesQ.rows) bySale.set(s.id, { ...s, items: [] })
     for (const it of itemsQ.rows) {
-      const rec = bySale.get(it.sale_id);
-      if (rec) rec.items.push(it);
+      const rec = bySale.get(it.sale_id)
+      if (rec) rec.items.push(it)
     }
-
-    res.json(Array.from(bySale.values()));
+    res.json(Array.from(bySale.values()))
   } catch (e) {
-    console.error('GET /api/sales/web/by-user error:', e);
-    res.status(500).json({ message: 'Server error' });
+    console.error('GET /api/sales/web/by-user error:', e)
+    res.status(500).json({ message: 'Server error' })
   } finally {
-    client.release();
+    client.release()
   }
-});
+})
 
-module.exports = router;
+module.exports = router
