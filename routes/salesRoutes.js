@@ -112,20 +112,23 @@ router.get('/web', async (_req, res) => {
 
 router.get('/web/by-user', async (req, res) => {
   try {
-    const email = (req.query.email || '').trim();
-    const mobile = (req.query.mobile || '').trim();
+    const email = String(req.query.email || '').trim();
+    const mobile = String(req.query.mobile || '').trim();
     if (!email && !mobile) return res.status(400).json({ message: 'email or mobile required' });
 
     const params = [];
-    let where = `source = 'WEB'`;
+    const conds = [];
     if (email) {
       params.push(email);
-      where += ` AND LOWER(customer_email) = LOWER($${params.length})`;
+      conds.push(`LOWER(customer_email) = LOWER($${params.length})`);
     }
     if (mobile) {
       params.push(mobile);
-      where += ` AND regexp_replace(customer_mobile,'\\D','','g') = regexp_replace($${params.length},'\\D','','g')`;
+      conds.push(
+        `regexp_replace(customer_mobile,'\\D','','g') = regexp_replace($${params.length},'\\D','','g')`
+      );
     }
+    const where = `source = 'WEB' AND (${conds.join(' OR ')})`;
 
     const salesQ = await pool.query(
       `SELECT id, status, payment_status, created_at, totals, branch_id,
@@ -175,18 +178,20 @@ router.get('/web/by-user', async (req, res) => {
     for (const s of salesQ.rows) bySale.set(String(s.id), { ...s, items: [] });
     for (const it of itemsQ.rows) {
       const rec = bySale.get(String(it.sale_id));
-      if (rec) rec.items.push({
-        variant_id: it.variant_id,
-        qty: Number(it.qty || 0),
-        price: Number(it.price || 0),
-        mrp: it.mrp != null ? Number(it.mrp) : null,
-        size: it.size,
-        colour: it.colour,
-        ean_code: it.ean_code,
-        image_url: it.image_url,
-        product_name: it.product_name,
-        brand_name: it.brand_name
-      });
+      if (rec) {
+        rec.items.push({
+          variant_id: it.variant_id,
+          qty: Number(it.qty || 0),
+          price: Number(it.price || 0),
+          mrp: it.mrp != null ? Number(it.mrp) : null,
+          size: it.size,
+          colour: it.colour,
+          ean_code: it.ean_code,
+          image_url: it.image_url,
+          product_name: it.product_name,
+          brand_name: it.brand_name
+        });
+      }
     }
 
     res.json(Array.from(bySale.values()));
