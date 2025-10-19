@@ -1,4 +1,4 @@
-const { v4: uuid } = require('uuid');
+const { randomUUID } = require('crypto');
 const Shiprocket = require('./shiprocketService');
 
 function haversineKm(a, b) {
@@ -96,7 +96,7 @@ async function fulfillOrderWithShiprocket(sale, pool) {
       awb = res.awb?.response?.data?.awb_code || null;
       labelUrl = res.label?.label_url || null;
     }
-    const sid = uuid();
+    const sid = randomUUID();
     await pool.query(
       `INSERT INTO shipments(id, sale_id, branch_id, shiprocket_order_id, shiprocket_shipment_id, awb, label_url, tracking_url, status)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
