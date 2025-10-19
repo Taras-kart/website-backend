@@ -52,6 +52,7 @@ app.use('/api/branch', require('./routes/branchInventoryRoutes'));
 app.use('/api/inventory', require('./routes/inventoryRoutes'));
 app.use('/api/sales', require('./routes/salesRoutes'));
 app.use('/api', require('./routes/shiprocketRoutes'));
+app.use('/api', require('./routes/shipmentRoutes'));
 
 
 app.get('/', (req, res) => res.status(200).send('Taras Kart API'));
