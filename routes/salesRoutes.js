@@ -90,24 +90,11 @@ router.post('/web/place', async (req, res) => {
       status: 'PLACED',
       totals: { bagTotal, discountTotal, couponPct, couponDiscount, convenience, giftWrap, payable }
     });
-  } catch (e) {
+  } catch {
     await client.query('ROLLBACK');
     return res.status(500).json({ message: 'Server error' });
   } finally {
     client.release();
-  }
-});
-
-router.get('/web/:id', async (req, res) => {
-  const id = String(req.params.id || '').trim();
-  if (!id) return res.status(400).json({ message: 'id required' });
-  try {
-    const s = await pool.query('SELECT * FROM sales WHERE id::text = $1', [id]);
-    if (!s.rowCount) return res.status(404).json({ message: 'Not found' });
-    const items = await pool.query('SELECT * FROM sale_items WHERE sale_id::text = $1', [id]);
-    return res.json({ sale: s.rows[0], items: items.rows });
-  } catch (e) {
-    return res.status(500).json({ message: 'Server error' });
   }
 });
 
@@ -118,7 +105,7 @@ router.get('/web', async (_req, res) => {
       ['WEB']
     );
     return res.json(list.rows);
-  } catch (e) {
+  } catch {
     return res.status(500).json({ message: 'Server error' });
   }
 });
@@ -127,10 +114,7 @@ router.get('/web/by-user', async (req, res) => {
   try {
     const email = (req.query.email || '').trim();
     const mobile = (req.query.mobile || '').trim();
-
-    if (!email && !mobile) {
-      return res.status(400).json({ message: 'email or mobile required' });
-    }
+    if (!email && !mobile) return res.status(400).json({ message: 'email or mobile required' });
 
     const params = [];
     let where = `source = 'WEB'`;
@@ -206,7 +190,20 @@ router.get('/web/by-user', async (req, res) => {
     }
 
     res.json(Array.from(bySale.values()));
-  } catch (e) {
+  } catch {
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+router.get('/web/:id', async (req, res) => {
+  const id = String(req.params.id || '').trim();
+  if (!id) return res.status(400).json({ message: 'id required' });
+  try {
+    const s = await pool.query('SELECT * FROM sales WHERE id::text = $1', [id]);
+    if (!s.rowCount) return res.status(404).json({ message: 'Not found' });
+    const items = await pool.query('SELECT * FROM sale_items WHERE sale_id::text = $1', [id]);
+    return res.json({ sale: s.rows[0], items: items.rows });
+  } catch {
     return res.status(500).json({ message: 'Server error' });
   }
 });
@@ -284,7 +281,7 @@ router.post('/confirm', requireAuth, async (req, res) => {
 
     await client.query('COMMIT');
     return res.json({ id: sale_id, status: 'confirmed', total });
-  } catch (e) {
+  } catch {
     await client.query('ROLLBACK');
     return res.status(500).json({ message: 'Server error' });
   } finally {
