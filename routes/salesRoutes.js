@@ -4,6 +4,22 @@ const { requireAuth } = require('../middleware/auth');
 
 const router = express.Router();
 
+async function resolveUserId(client, email, mobile) {
+  const params = [];
+  const conds = [];
+  if (email) {
+    params.push(email);
+    conds.push(`LOWER(email) = LOWER($${params.length})`);
+  }
+  if (mobile) {
+    params.push(mobile);
+    conds.push(`regexp_replace(mobile,'\\D','','g') = regexp_replace($${params.length},'\\D','','g')`);
+  }
+  if (conds.length === 0) return null;
+  const q = await client.query(`SELECT id FROM users WHERE ${conds.join(' OR ')} LIMIT 1`, params);
+  return q.rowCount ? q.rows[0].id : null;
+}
+
 router.post('/web/place', async (req, res) => {
   const {
     customer_email,
@@ -24,6 +40,12 @@ router.post('/web/place', async (req, res) => {
   try {
     await client.query('BEGIN');
 
+    const userId = await resolveUserId(
+      client,
+      String(customer_email || '').trim(),
+      String(customer_mobile || '').trim()
+    );
+
     let bagTotal = 0;
     let discountTotal = 0;
     for (const it of items) {
@@ -42,12 +64,13 @@ router.post('/web/place', async (req, res) => {
 
     const inserted = await client.query(
       `INSERT INTO sales
-         (source, customer_email, customer_name, customer_mobile, shipping_address, status, payment_status, totals, branch_id, total)
+         (source, user_id, customer_email, customer_name, customer_mobile, shipping_address, status, payment_status, totals, branch_id, total)
        VALUES
-         ($1,$2,$3,$4,$5::jsonb,$6,$7,$8::jsonb,$9,$10)
+         ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9::jsonb,$10,$11)
        RETURNING id`,
       [
         'WEB',
+        userId,
         customer_email || null,
         customer_name || null,
         customer_mobile || null,
@@ -111,13 +134,18 @@ router.get('/web', async (_req, res) => {
 });
 
 router.get('/web/by-user', async (req, res) => {
+  const client = await pool.connect();
   try {
     const email = String(req.query.email || '').trim();
     const mobile = String(req.query.mobile || '').trim();
+
     if (!email && !mobile) return res.status(400).json({ message: 'email or mobile required' });
+
+    const userId = await resolveUserId(client, email, mobile);
 
     const params = [];
     const conds = [];
+
     if (email) {
       params.push(email);
       conds.push(`LOWER(customer_email) = LOWER($${params.length})`);
@@ -128,10 +156,15 @@ router.get('/web/by-user', async (req, res) => {
         `regexp_replace(customer_mobile,'\\D','','g') = regexp_replace($${params.length},'\\D','','g')`
       );
     }
+    if (userId) {
+      params.push(userId);
+      conds.push(`user_id = $${params.length}`);
+    }
+
     const where = `source = 'WEB' AND (${conds.join(' OR ')})`;
 
-    const salesQ = await pool.query(
-      `SELECT id, status, payment_status, created_at, totals, branch_id,
+    const salesQ = await client.query(
+      `SELECT id, user_id, status, payment_status, created_at, totals, branch_id,
               customer_name, customer_email, customer_mobile
        FROM sales
        WHERE ${where}
@@ -140,12 +173,15 @@ router.get('/web/by-user', async (req, res) => {
       params
     );
 
-    if (salesQ.rowCount === 0) return res.json([]);
+    if (salesQ.rowCount === 0) {
+      client.release();
+      return res.json([]);
+    }
 
     const ids = salesQ.rows.map((r) => String(r.id));
     const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh';
 
-    const itemsQ = await pool.query(
+    const itemsQ = await client.query(
       `SELECT
          si.sale_id,
          si.variant_id,
@@ -194,8 +230,10 @@ router.get('/web/by-user', async (req, res) => {
       }
     }
 
+    client.release();
     res.json(Array.from(bySale.values()));
   } catch {
+    client.release();
     res.status(500).json({ message: 'Server error' });
   }
 });
