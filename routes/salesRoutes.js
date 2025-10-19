@@ -69,9 +69,9 @@ router.post('/web/place', async (req, res) => {
         `INSERT INTO sale_items
            (sale_id, variant_id, qty, price, mrp, size, colour, image_url, ean_code)
          VALUES
-           ($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9)`,
+           ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
         [
-          saleId,
+          String(saleId),
           Number(it?.variant_id ?? it?.product_id),
           Number(it?.qty ?? 1),
           Number(it?.price ?? 0),
@@ -92,7 +92,6 @@ router.post('/web/place', async (req, res) => {
     });
   } catch (e) {
     await client.query('ROLLBACK');
-    console.error('POST /api/sales/web/place error:', e?.message || e);
     return res.status(500).json({ message: 'Server error' });
   } finally {
     client.release();
@@ -103,12 +102,11 @@ router.get('/web/:id', async (req, res) => {
   const id = String(req.params.id || '').trim();
   if (!id) return res.status(400).json({ message: 'id required' });
   try {
-    const s = await pool.query('SELECT * FROM sales WHERE id = $1::uuid', [id]);
+    const s = await pool.query('SELECT * FROM sales WHERE id::text = $1', [id]);
     if (!s.rowCount) return res.status(404).json({ message: 'Not found' });
-    const items = await pool.query('SELECT * FROM sale_items WHERE sale_id = $1::uuid', [id]);
+    const items = await pool.query('SELECT * FROM sale_items WHERE sale_id::text = $1', [id]);
     return res.json({ sale: s.rows[0], items: items.rows });
   } catch (e) {
-    console.error('GET /api/sales/web/:id error:', e?.message || e);
     return res.status(500).json({ message: 'Server error' });
   }
 });
@@ -121,7 +119,6 @@ router.get('/web', async (_req, res) => {
     );
     return res.json(list.rows);
   } catch (e) {
-    console.error('GET /api/sales/web error:', e?.message || e);
     return res.status(500).json({ message: 'Server error' });
   }
 });
@@ -143,7 +140,7 @@ router.get('/web/by-user', async (req, res) => {
     }
     if (mobile) {
       params.push(mobile);
-      where += ` AND customer_mobile = $${params.length}`;
+      where += ` AND regexp_replace(customer_mobile,'\\D','','g') = regexp_replace($${params.length},'\\D','','g')`;
     }
 
     const salesQ = await pool.query(
@@ -158,7 +155,7 @@ router.get('/web/by-user', async (req, res) => {
 
     if (salesQ.rowCount === 0) return res.json([]);
 
-    const ids = salesQ.rows.map((r) => r.id);
+    const ids = salesQ.rows.map((r) => String(r.id));
     const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh';
 
     const itemsQ = await pool.query(
@@ -186,14 +183,14 @@ router.get('/web/by-user', async (req, res) => {
        LEFT JOIN product_variants v ON v.id = si.variant_id
        LEFT JOIN products p ON p.id = v.product_id
        LEFT JOIN product_images pi ON pi.ean_code = si.ean_code
-       WHERE si.sale_id = ANY($1::uuid[])`,
+       WHERE si.sale_id = ANY($1::text[])`,
       [ids, cloud]
     );
 
     const bySale = new Map();
-    for (const s of salesQ.rows) bySale.set(s.id, { ...s, items: [] });
+    for (const s of salesQ.rows) bySale.set(String(s.id), { ...s, items: [] });
     for (const it of itemsQ.rows) {
-      const rec = bySale.get(it.sale_id);
+      const rec = bySale.get(String(it.sale_id));
       if (rec) rec.items.push({
         variant_id: it.variant_id,
         qty: Number(it.qty || 0),
@@ -210,8 +207,7 @@ router.get('/web/by-user', async (req, res) => {
 
     res.json(Array.from(bySale.values()));
   } catch (e) {
-    console.error('GET /api/sales/web/by-user error:', e?.message || e);
-    res.status(500).json({ message: 'Server error' });
+    return res.status(500).json({ message: 'Server error' });
   }
 });
 
@@ -228,7 +224,7 @@ router.post('/confirm', requireAuth, async (req, res) => {
 
     const idem = await client.query('SELECT key FROM idempotency_keys WHERE key = $1', [client_action_id]);
     if (idem.rowCount) {
-      const s = await client.query('SELECT id, status, total FROM sales WHERE id = $1::uuid', [sale_id]);
+      const s = await client.query('SELECT id, status, total FROM sales WHERE id::text = $1', [String(sale_id)]);
       await client.query('COMMIT');
       return res.json({
         id: sale_id,
@@ -241,15 +237,15 @@ router.post('/confirm', requireAuth, async (req, res) => {
     let total = 0;
     for (const it of items) total += Number(it?.qty ?? 0) * Number(it?.price ?? 0);
 
-    const s0 = await client.query('SELECT id FROM sales WHERE id = $1::uuid', [sale_id]);
+    const s0 = await client.query('SELECT id FROM sales WHERE id::text = $1', [String(sale_id)]);
     if (!s0.rowCount) {
       await client.query(
         `INSERT INTO sales (id, branch_id, status, total, payment_method, payment_ref)
-         VALUES ($1::uuid,$2,'pending',$3,$4,$5)`,
-        [sale_id, branchId, total, payment?.method || null, payment?.ref || null]
+         VALUES ($1,$2,'pending',$3,$4,$5)`,
+        [String(sale_id), branchId, total, payment?.method || null, payment?.ref || null]
       );
     } else {
-      await client.query('UPDATE sales SET total = $2 WHERE id = $1::uuid', [sale_id, total]);
+      await client.query('UPDATE sales SET total = $2 WHERE id::text = $1', [String(sale_id), total]);
     }
 
     for (const it of items) {
@@ -269,12 +265,12 @@ router.post('/confirm', requireAuth, async (req, res) => {
       );
     }
 
-    await client.query('DELETE FROM sale_items WHERE sale_id = $1::uuid', [sale_id]);
+    await client.query('DELETE FROM sale_items WHERE sale_id::text = $1', [String(sale_id)]);
     for (const it of items) {
       await client.query(
-        'INSERT INTO sale_items (sale_id, variant_id, ean_code, qty, price) VALUES ($1::uuid,$2,$3,$4,$5)',
+        'INSERT INTO sale_items (sale_id, variant_id, ean_code, qty, price) VALUES ($1,$2,$3,$4,$5)',
         [
-          sale_id,
+          String(sale_id),
           Number(it?.variant_id ?? it?.product_id),
           it?.barcode_value ?? it?.ean_code ?? null,
           Number(it?.qty ?? 0),
@@ -283,14 +279,13 @@ router.post('/confirm', requireAuth, async (req, res) => {
       );
     }
 
-    await client.query('UPDATE sales SET status = $2 WHERE id = $1::uuid', [sale_id, 'confirmed']);
+    await client.query('UPDATE sales SET status = $2 WHERE id::text = $1', [String(sale_id), 'confirmed']);
     await client.query('INSERT INTO idempotency_keys (key) VALUES ($1)', [client_action_id]);
 
     await client.query('COMMIT');
     return res.json({ id: sale_id, status: 'confirmed', total });
   } catch (e) {
     await client.query('ROLLBACK');
-    console.error('POST /api/sales/confirm error:', e?.message || e);
     return res.status(500).json({ message: 'Server error' });
   } finally {
     client.release();
