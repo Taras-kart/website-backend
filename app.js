@@ -51,6 +51,8 @@ app.use('/api/barcodes', require('./routes/barcodeRoutes'));
 app.use('/api/branch', require('./routes/branchInventoryRoutes'));
 app.use('/api/inventory', require('./routes/inventoryRoutes'));
 app.use('/api/sales', require('./routes/salesRoutes'));
+app.use('/api', require('./routes/shiprocketRoutes'));
+
 
 app.get('/', (req, res) => res.status(200).send('Taras Kart API'));
 app.get('/healthz', (req, res) => res.status(200).send('ok'));
