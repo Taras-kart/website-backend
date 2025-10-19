@@ -15,9 +15,16 @@ async function resolveUserId(client, email, mobile) {
     params.push(mobile);
     conds.push(`regexp_replace(mobile,'\\D','','g') = regexp_replace($${params.length},'\\D','','g')`);
   }
-  if (conds.length === 0) return null;
+  if (!conds.length) return null;
   const q = await client.query(`SELECT id FROM users WHERE ${conds.join(' OR ')} LIMIT 1`, params);
   return q.rowCount ? q.rows[0].id : null;
+}
+
+async function salesHasUserId(client) {
+  const r = await client.query(
+    "SELECT 1 FROM information_schema.columns WHERE table_name='sales' AND column_name='user_id' LIMIT 1"
+  );
+  return !!r.rowCount;
 }
 
 router.post('/web/place', async (req, res) => {
@@ -40,11 +47,10 @@ router.post('/web/place', async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    const userId = await resolveUserId(
-      client,
-      String(customer_email || '').trim(),
-      String(customer_mobile || '').trim()
-    );
+    const email = String(customer_email || '').trim();
+    const mobile = String(customer_mobile || '').trim();
+    const hasUser = await salesHasUserId(client);
+    const userId = hasUser ? await resolveUserId(client, email, mobile) : null;
 
     let bagTotal = 0;
     let discountTotal = 0;
@@ -62,27 +68,41 @@ router.post('/web/place', async (req, res) => {
     const giftWrap = Number(totals?.giftWrap ?? 0);
     const payable = bagTotal - discountTotal - couponDiscount + convenience + giftWrap;
 
+    const cols = [
+      'source',
+      hasUser ? 'user_id' : null,
+      'customer_email',
+      'customer_name',
+      'customer_mobile',
+      'shipping_address',
+      'status',
+      'payment_status',
+      'totals',
+      'branch_id',
+      'total'
+    ].filter(Boolean);
+
+    const vals = [
+      'WEB',
+      hasUser ? userId : null,
+      email || null,
+      customer_name || null,
+      mobile || null,
+      shipping_address ? JSON.stringify(shipping_address) : null,
+      'PLACED',
+      payment_status || 'COD',
+      totals
+        ? JSON.stringify(totals)
+        : JSON.stringify({ bagTotal, discountTotal, couponPct, couponDiscount, convenience, giftWrap, payable }),
+      branch_id || null,
+      payable
+    ].filter((_, i) => cols[i] != null);
+
+    const placeholders = vals.map((_, i) => `$${i + 1}`).join(',');
+
     const inserted = await client.query(
-      `INSERT INTO sales
-         (source, user_id, customer_email, customer_name, customer_mobile, shipping_address, status, payment_status, totals, branch_id, total)
-       VALUES
-         ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9::jsonb,$10,$11)
-       RETURNING id`,
-      [
-        'WEB',
-        userId,
-        customer_email || null,
-        customer_name || null,
-        customer_mobile || null,
-        shipping_address ? JSON.stringify(shipping_address) : null,
-        'PLACED',
-        payment_status || 'COD',
-        totals
-          ? JSON.stringify(totals)
-          : JSON.stringify({ bagTotal, discountTotal, couponPct, couponDiscount, convenience, giftWrap, payable }),
-        branch_id || null,
-        payable
-      ]
+      `INSERT INTO sales (${cols.join(',')}) VALUES (${placeholders}) RETURNING id`,
+      vals
     );
 
     const saleId = inserted.rows[0].id;
@@ -138,9 +158,9 @@ router.get('/web/by-user', async (req, res) => {
   try {
     const email = String(req.query.email || '').trim();
     const mobile = String(req.query.mobile || '').trim();
-
     if (!email && !mobile) return res.status(400).json({ message: 'email or mobile required' });
 
+    const hasUser = await salesHasUserId(client);
     const userId = await resolveUserId(client, email, mobile);
 
     const params = [];
@@ -152,11 +172,9 @@ router.get('/web/by-user', async (req, res) => {
     }
     if (mobile) {
       params.push(mobile);
-      conds.push(
-        `regexp_replace(customer_mobile,'\\D','','g') = regexp_replace($${params.length},'\\D','','g')`
-      );
+      conds.push(`regexp_replace(customer_mobile,'\\D','','g') = regexp_replace($${params.length},'\\D','','g')`);
     }
-    if (userId) {
+    if (hasUser && userId) {
       params.push(userId);
       conds.push(`user_id = $${params.length}`);
     }
@@ -164,7 +182,7 @@ router.get('/web/by-user', async (req, res) => {
     const where = `source = 'WEB' AND (${conds.join(' OR ')})`;
 
     const salesQ = await client.query(
-      `SELECT id, user_id, status, payment_status, created_at, totals, branch_id,
+      `SELECT id, ${hasUser ? 'user_id,' : ''} status, payment_status, created_at, totals, branch_id,
               customer_name, customer_email, customer_mobile
        FROM sales
        WHERE ${where}
@@ -174,7 +192,6 @@ router.get('/web/by-user', async (req, res) => {
     );
 
     if (salesQ.rowCount === 0) {
-      client.release();
       return res.json([]);
     }
 
@@ -206,7 +223,7 @@ router.get('/web/by-user', async (req, res) => {
        LEFT JOIN product_variants v ON v.id = si.variant_id
        LEFT JOIN products p ON p.id = v.product_id
        LEFT JOIN product_images pi ON pi.ean_code = si.ean_code
-       WHERE si.sale_id = ANY($1::text[])`,
+       WHERE si.sale_id = ANY($1::uuid[])`,
       [ids, cloud]
     );
 
@@ -230,11 +247,11 @@ router.get('/web/by-user', async (req, res) => {
       }
     }
 
-    client.release();
     res.json(Array.from(bySale.values()));
   } catch {
-    client.release();
     res.status(500).json({ message: 'Server error' });
+  } finally {
+    client.release();
   }
 });
 
