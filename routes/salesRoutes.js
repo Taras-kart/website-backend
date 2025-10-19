@@ -126,6 +126,95 @@ router.get('/web', async (_req, res) => {
   }
 });
 
+router.get('/web/by-user', async (req, res) => {
+  try {
+    const email = (req.query.email || '').trim();
+    const mobile = (req.query.mobile || '').trim();
+
+    if (!email && !mobile) {
+      return res.status(400).json({ message: 'email or mobile required' });
+    }
+
+    const params = [];
+    let where = `source = 'WEB'`;
+    if (email) {
+      params.push(email);
+      where += ` AND LOWER(customer_email) = LOWER($${params.length})`;
+    }
+    if (mobile) {
+      params.push(mobile);
+      where += ` AND customer_mobile = $${params.length}`;
+    }
+
+    const salesQ = await pool.query(
+      `SELECT id, status, payment_status, created_at, totals, branch_id,
+              customer_name, customer_email, customer_mobile
+       FROM sales
+       WHERE ${where}
+       ORDER BY created_at DESC NULLS LAST, id DESC
+       LIMIT 200`,
+      params
+    );
+
+    if (salesQ.rowCount === 0) return res.json([]);
+
+    const ids = salesQ.rows.map((r) => r.id);
+    const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh';
+
+    const itemsQ = await pool.query(
+      `SELECT
+         si.sale_id,
+         si.variant_id,
+         si.qty,
+         si.price,
+         si.mrp,
+         si.size,
+         si.colour,
+         si.ean_code,
+         COALESCE(
+           NULLIF(si.image_url,''),
+           NULLIF(pi.image_url,''),
+           CASE
+             WHEN si.ean_code IS NOT NULL AND si.ean_code <> ''
+             THEN CONCAT('https://res.cloudinary.com/', $2::text, '/image/upload/f_auto,q_auto/products/', si.ean_code)
+             ELSE NULL
+           END
+         ) AS image_url,
+         p.name  AS product_name,
+         p.brand_name
+       FROM sale_items si
+       LEFT JOIN product_variants v ON v.id = si.variant_id
+       LEFT JOIN products p ON p.id = v.product_id
+       LEFT JOIN product_images pi ON pi.ean_code = si.ean_code
+       WHERE si.sale_id = ANY($1::uuid[])`,
+      [ids, cloud]
+    );
+
+    const bySale = new Map();
+    for (const s of salesQ.rows) bySale.set(s.id, { ...s, items: [] });
+    for (const it of itemsQ.rows) {
+      const rec = bySale.get(it.sale_id);
+      if (rec) rec.items.push({
+        variant_id: it.variant_id,
+        qty: Number(it.qty || 0),
+        price: Number(it.price || 0),
+        mrp: it.mrp != null ? Number(it.mrp) : null,
+        size: it.size,
+        colour: it.colour,
+        ean_code: it.ean_code,
+        image_url: it.image_url,
+        product_name: it.product_name,
+        brand_name: it.brand_name
+      });
+    }
+
+    res.json(Array.from(bySale.values()));
+  } catch (e) {
+    console.error('GET /api/sales/web/by-user error:', e?.message || e);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 router.post('/confirm', requireAuth, async (req, res) => {
   const { sale_id, branch_id, payment, items, client_action_id } = req.body || {};
   const branchId = Number(branch_id || req.user.branch_id);
