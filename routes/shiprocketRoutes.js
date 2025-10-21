@@ -14,19 +14,28 @@ router.post('/shiprocket/warehouses/sync', async (req, res) => {
     );
     const results = [];
     for (const b of branches) {
-      const data = await sr.upsertWarehouseFromBranch(b);
-      const pickupName = data?.pickup_location || b.name;
-      await pool.query(
-        `INSERT INTO shiprocket_warehouses (branch_id, warehouse_id, name, pincode, city, state, address, phone)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-         ON CONFLICT (branch_id) DO UPDATE SET warehouse_id=EXCLUDED.warehouse_id, name=EXCLUDED.name, pincode=EXCLUDED.pincode, city=EXCLUDED.city, state=EXCLUDED.state, address=EXCLUDED.address, phone=EXCLUDED.phone`,
-        [b.id, data?.pickup_id || 0, pickupName, b.pincode, b.city, b.state, b.address, b.phone]
-      );
-      results.push({ branch_id: b.id, pickup: pickupName });
+      try {
+        const data = await sr.upsertWarehouseFromBranch(b);
+        const pickupName = data?.pickup_location || `${b.name} - ${b.pincode}`;
+        await pool.query(
+          `INSERT INTO shiprocket_warehouses (branch_id, warehouse_id, name, pincode, city, state, address, phone)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+           ON CONFLICT (branch_id) DO UPDATE 
+           SET warehouse_id=EXCLUDED.warehouse_id, name=EXCLUDED.name, pincode=EXCLUDED.pincode, 
+               city=EXCLUDED.city, state=EXCLUDED.state, address=EXCLUDED.address, phone=EXCLUDED.phone`,
+          [b.id, data?.pickup_id || 0, pickupName, b.pincode, b.city, b.state, b.address, b.phone]
+        );
+        results.push({ branch_id: b.id, pickup: pickupName });
+      } catch (innerErr) {
+        console.error('Shiprocket warehouse sync error for branch:', b.name, innerErr.response?.data || innerErr.message);
+        results.push({ branch_id: b.id, error: innerErr.response?.data || innerErr.message });
+      }
     }
     res.json({ ok: true, results });
   } catch (e) {
-    res.status(500).json({ ok: false, message: e.message || 'sync failed' });
+    const errData = e.response?.data || e.message || 'sync failed';
+    console.error('Shiprocket warehouse sync failed:', errData);
+    res.status(500).json({ ok: false, message: errData });
   }
 });
 
@@ -41,7 +50,9 @@ router.post('/shiprocket/fulfill/:id', async (req, res) => {
     const shipments = await fulfillOrderWithShiprocket(sale, pool);
     res.json({ ok: true, shipments });
   } catch (e) {
-    res.status(500).json({ ok: false, message: e.message || 'fulfillment failed' });
+    const errData = e.response?.data || e.message || 'fulfillment failed';
+    console.error('Shiprocket fulfillment error:', errData);
+    res.status(500).json({ ok: false, message: errData });
   }
 });
 
