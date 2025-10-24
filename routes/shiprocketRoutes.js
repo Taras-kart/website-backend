@@ -5,6 +5,57 @@ const { fulfillOrderWithShiprocket } = require('../services/orderFulfillment');
 
 const router = express.Router();
 
+router.post('/shiprocket/warehouses/import', async (req, res) => {
+  try {
+    const sr = new Shiprocket({ pool });
+    await sr.init();
+
+    const { data } = await sr.api('get', '/settings/company/pickup');
+    const pickups = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
+
+    const { rows: branches } = await pool.query(
+      'SELECT id, name, address, city, state, pincode, phone FROM branches WHERE is_active = true'
+    );
+
+    const results = [];
+    for (const b of branches) {
+      let best = pickups.find(p => String(p.pin_code) === String(b.pincode));
+      if (!best && b.city) {
+        const cityNorm = String(b.city).trim().toLowerCase();
+        best = pickups.find(p => String(p.city).trim().toLowerCase() === cityNorm);
+      }
+      if (!best) {
+        results.push({ branch_id: b.id, error: 'No matching pickup found in Shiprocket' });
+        continue;
+      }
+
+      const pickupName = best.pickup_location || best.name || b.name;
+      const pickupId = best.pickup_id || best.id || 0;
+
+      await pool.query(
+        `INSERT INTO shiprocket_warehouses (branch_id, warehouse_id, name, pincode, city, state, address, phone)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+         ON CONFLICT (branch_id) DO UPDATE
+         SET warehouse_id=EXCLUDED.warehouse_id,
+             name=EXCLUDED.name,
+             pincode=EXCLUDED.pincode,
+             city=EXCLUDED.city,
+             state=EXCLUDED.state,
+             address=EXCLUDED.address,
+             phone=EXCLUDED.phone`,
+        [b.id, pickupId, pickupName, String(best.pin_code || b.pincode), best.city || b.city, best.state || b.state, best.address || b.address, b.phone]
+      );
+
+      results.push({ branch_id: b.id, mapped_to: pickupName, pickup_id: pickupId });
+    }
+
+    res.json({ ok: true, results });
+  } catch (e) {
+    const msg = e.response?.data || e.message || 'import failed';
+    res.status(500).json({ ok: false, message: msg });
+  }
+});
+
 router.post('/shiprocket/warehouses/sync', async (req, res) => {
   try {
     const sr = new Shiprocket({ pool });
@@ -27,14 +78,12 @@ router.post('/shiprocket/warehouses/sync', async (req, res) => {
         );
         results.push({ branch_id: b.id, pickup: pickupName });
       } catch (innerErr) {
-        console.error('Shiprocket warehouse sync error for branch:', b.name, innerErr.response?.data || innerErr.message);
         results.push({ branch_id: b.id, error: innerErr.response?.data || innerErr.message });
       }
     }
     res.json({ ok: true, results });
   } catch (e) {
     const errData = e.response?.data || e.message || 'sync failed';
-    console.error('Shiprocket warehouse sync failed:', errData);
     res.status(500).json({ ok: false, message: errData });
   }
 });
@@ -51,7 +100,6 @@ router.post('/shiprocket/fulfill/:id', async (req, res) => {
     res.json({ ok: true, shipments });
   } catch (e) {
     const errData = e.response?.data || e.message || 'fulfillment failed';
-    console.error('Shiprocket fulfillment error:', errData);
     res.status(500).json({ ok: false, message: errData });
   }
 });

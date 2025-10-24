@@ -1,7 +1,4 @@
-// controllers/orderController.js
 const { listOrders, trackByOrderId } = require('../services/shiprocketClient');
-
-// Map Shiprocket order -> UI-friendly shape your Orders component expects
 function toUiOrder(o) {
   const p = (o.products && o.products[0]) || {};
   return {
