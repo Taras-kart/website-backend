@@ -9,29 +9,29 @@ router.post('/shiprocket/warehouses/import', async (req, res) => {
   try {
     const sr = new Shiprocket({ pool });
     await sr.init();
-
     const { data } = await sr.api('get', '/settings/company/pickup');
-    const pickups = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
-
+    const pickups = Array.isArray(data?.data?.shipping_address)
+      ? data.data.shipping_address
+      : [];
     const { rows: branches } = await pool.query(
       'SELECT id, name, address, city, state, pincode, phone FROM branches WHERE is_active = true'
     );
-
+    const norm = (s) => String(s ?? '').trim().toLowerCase();
     const results = [];
     for (const b of branches) {
-      let best = pickups.find(p => String(p.pin_code) === String(b.pincode));
+      const bpincode = String(b.pincode || '').trim();
+      let best = null;
+      if (bpincode) best = pickups.find(p => String(p.pin_code || '').trim() === bpincode);
       if (!best && b.city) {
-        const cityNorm = String(b.city).trim().toLowerCase();
-        best = pickups.find(p => String(p.city).trim().toLowerCase() === cityNorm);
+        const cityNorm = norm(b.city);
+        best = pickups.find(p => norm(p.city) === cityNorm);
       }
       if (!best) {
         results.push({ branch_id: b.id, error: 'No matching pickup found in Shiprocket' });
         continue;
       }
-
       const pickupName = best.pickup_location || best.name || b.name;
-      const pickupId = best.pickup_id || best.id || 0;
-
+      const pickupId = best.pickup_id || best.id || best.rto_address_id || 0;
       await pool.query(
         `INSERT INTO shiprocket_warehouses (branch_id, warehouse_id, name, pincode, city, state, address, phone)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
@@ -43,12 +43,19 @@ router.post('/shiprocket/warehouses/import', async (req, res) => {
              state=EXCLUDED.state,
              address=EXCLUDED.address,
              phone=EXCLUDED.phone`,
-        [b.id, pickupId, pickupName, String(best.pin_code || b.pincode), best.city || b.city, best.state || b.state, best.address || b.address, b.phone]
+        [
+          b.id,
+          pickupId,
+          pickupName,
+          String(best.pin_code || b.pincode || ''),
+          best.city || b.city || '',
+          best.state || b.state || '',
+          best.address || b.address || '',
+          b.phone || ''
+        ]
       );
-
       results.push({ branch_id: b.id, mapped_to: pickupName, pickup_id: pickupId });
     }
-
     res.json({ ok: true, results });
   } catch (e) {
     const msg = e.response?.data || e.message || 'import failed';
