@@ -211,10 +211,59 @@ router.get('/web/:id', async (req, res) => {
   const id = String(req.params.id || '').trim()
   if (!id) return res.status(400).json({ message: 'id required' })
   try {
-    const s = await pool.query('SELECT * FROM sales WHERE id = $1::uuid', [id])
+    const s = await pool.query(
+      `SELECT id, status, payment_status, created_at, totals, branch_id,
+              customer_name, customer_email, customer_mobile, shipping_address
+       FROM sales
+       WHERE id = $1::uuid`,
+      [id]
+    )
     if (!s.rowCount) return res.status(404).json({ message: 'Not found' })
-    const items = await pool.query('SELECT * FROM sale_items WHERE sale_id = $1::uuid', [id])
-    return res.json({ sale: s.rows[0], items: items.rows })
+
+    const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh'
+
+    const itemsQ = await pool.query(
+      `SELECT
+         si.variant_id,
+         si.qty,
+         si.price,
+         si.mrp,
+         si.size,
+         si.colour,
+         si.ean_code,
+         COALESCE(
+           NULLIF(si.image_url,''),
+           NULLIF(pi.image_url,''),
+           CASE
+             WHEN si.ean_code IS NOT NULL AND si.ean_code <> ''
+             THEN CONCAT('https://res.cloudinary.com/', $2::text, '/image/upload/f_auto,q_auto/products/', si.ean_code)
+             ELSE NULL
+           END
+         ) AS image_url,
+         p.name  AS product_name,
+         p.brand_name
+       FROM sale_items si
+       LEFT JOIN product_variants v ON v.id = si.variant_id
+       LEFT JOIN products p ON p.id = v.product_id
+       LEFT JOIN product_images pi ON pi.ean_code = si.ean_code
+       WHERE si.sale_id = $1::uuid`,
+      [id, cloud]
+    )
+
+    const items = itemsQ.rows.map(r => ({
+      variant_id: r.variant_id,
+      qty: Number(r.qty || 0),
+      price: Number(r.price || 0),
+      mrp: r.mrp != null ? Number(r.mrp) : null,
+      size: r.size,
+      colour: r.colour,
+      ean_code: r.ean_code,
+      image_url: r.image_url,
+      product_name: r.product_name,
+      brand_name: r.brand_name
+    }))
+
+    return res.json({ sale: s.rows[0], items })
   } catch {
     return res.status(500).json({ message: 'Server error' })
   }
