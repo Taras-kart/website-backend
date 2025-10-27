@@ -54,6 +54,7 @@ app.use('/api/sales', require('./routes/salesRoutes'));
 app.use('/api', require('./routes/shiprocketRoutes'));
 app.use('/api', require('./routes/shipmentRoutes'));
 app.use('/api', require('./routes/returnsRoutes'));
+app.use('/api', require('./routes/razorpayRoutes'));
 
 
 
