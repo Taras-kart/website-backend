@@ -1,4 +1,5 @@
 const express = require('express');
+const { randomUUID } = require('crypto');
 const pool = require('../db');
 const RazorpayService = require('../services/razorpayService');
 
@@ -38,10 +39,10 @@ router.post('/payments/create-order', async (req, res) => {
     });
 
     await pool.query(
-      `INSERT INTO payments (sale_id, razorpay_order_id, status, amount_paise, currency, email, phone, notes)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+      `INSERT INTO payments (id, sale_id, razorpay_order_id, status, amount_paise, currency, email, phone, notes)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
        ON CONFLICT (razorpay_order_id) DO NOTHING`,
-      [saleId, order.id, order.status || 'created', order.amount, order.currency, sale.customer_email || null, sale.customer_mobile || null, JSON.stringify(order.notes || {})]
+      [randomUUID(), saleId, order.id, order.status || 'created', order.amount, order.currency, sale.customer_email || null, sale.customer_mobile || null, JSON.stringify(order.notes || {})]
     );
 
     res.json({
