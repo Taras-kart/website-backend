@@ -103,6 +103,23 @@ router.post('/web/place', async (req, res) => {
   }
 })
 
+router.post('/web/set-payment-status', async (req, res) => {
+  try {
+    const saleId = String(req.body.sale_id || '').trim()
+    const status = String(req.body.status || '').trim().toUpperCase()
+    if (!saleId || !status) return res.status(400).json({ message: 'sale_id and status required' })
+    if (!['COD', 'PENDING', 'PAID', 'FAILED'].includes(status)) return res.status(400).json({ message: 'invalid status' })
+    const q = await pool.query(
+      `UPDATE sales SET payment_status=$2, updated_at=now() WHERE id=$1::uuid RETURNING id, payment_status`,
+      [saleId, status]
+    )
+    if (!q.rowCount) return res.status(404).json({ message: 'Sale not found' })
+    return res.json({ id: q.rows[0].id, payment_status: q.rows[0].payment_status })
+  } catch {
+    return res.status(500).json({ message: 'Server error' })
+  }
+})
+
 router.get('/web', async (_req, res) => {
   try {
     const list = await pool.query(
