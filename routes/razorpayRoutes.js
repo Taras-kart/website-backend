@@ -1,3 +1,4 @@
+// D:\shopping-backend\routes\razorpayRoutes.js
 const express = require('express')
 const pool = require('../db')
 const RazorpayService = require('../services/razorpayService')
@@ -20,8 +21,8 @@ router.post('/payments/create-order', async (req, res) => {
     if (!saleId) return res.status(400).json({ message: 'sale_id required' })
 
     const s = await pool.query(
-      `SELECT id, total, totals, customer_email, customer_mobile
-       FROM sales WHERE id=$1::uuid`, [saleId]
+      `SELECT id, total, totals, customer_email, customer_mobile FROM sales WHERE id=$1::uuid`,
+      [saleId]
     )
     if (!s.rowCount) return res.status(404).json({ message: 'Sale not found' })
 
@@ -82,8 +83,7 @@ router.post('/payments/verify', async (req, res) => {
 
     if (p.rowCount && ok) {
       await pool.query(
-        `UPDATE sales SET payment_status='PAID'
-         WHERE id=$1::uuid`,
+        `UPDATE sales SET payment_status='PAID' WHERE id=$1::uuid`,
         [p.rows[0].sale_id]
       )
     }
@@ -158,8 +158,7 @@ router.post('/razorpay/webhook', express.raw({ type: 'application/json' }), asyn
         )
         if (s.rowCount) {
           await pool.query(
-            `UPDATE sales SET payment_status='PAID'
-             WHERE id=$1::uuid`,
+            `UPDATE sales SET payment_status='PAID' WHERE id=$1::uuid`,
             [s.rows[0].sale_id]
           )
         }
