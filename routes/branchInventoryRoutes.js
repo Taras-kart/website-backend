@@ -155,7 +155,7 @@ router.get('/:branchId/import-rows', requireBranchAuth, async (req, res) => {
        FROM import_rows
        WHERE ${where}
        ORDER BY id ASC
-       LIMIT $${params.length-1} OFFSET $${params.length}`,
+       LIMIT $${params.length - 1} OFFSET $${params.length}`,
       params
     );
     const nextOffset = offset + rowsQ.rows.length;
@@ -220,7 +220,7 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
     const job = j.rows[0];
     if (!job.file_url) return res.status(400).json({ message: 'Job has no file_url' });
     const st = String(job.status_enum || '').toUpperCase();
-    if (st === 'COMPLETE' || st === 'PARTIAL') {
+    if (st === 'COMPLETE' || st === 'PARTIAL' || st === 'FAILED') {
       return res.json({ done: true, processed: 0, nextStart: start, ok: 0, err: 0, totalRows: job.rows_total || 0 });
     }
     const gender = normGender(job.gender);
@@ -328,18 +328,30 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
     const newError = (job.rows_error || 0) + err;
     const rowsDone = start + slice.length;
     const isDone = rowsDone >= totalRows;
-    const finalStatus = isDone ? (newError > 0 ? 'PARTIAL' : 'COMPLETE') : 'PENDING';
+    let finalStatus = 'PENDING';
+    if (isDone) {
+      if (newSuccess === 0 && newError > 0) {
+        finalStatus = 'FAILED';
+      } else if (newError > 0) {
+        finalStatus = 'PARTIAL';
+      } else {
+        finalStatus = 'COMPLETE';
+      }
+    }
     await pool.query(
       `UPDATE import_jobs
          SET rows_total   = $1,
              rows_success = $2,
              rows_error   = $3,
              status_enum  = $4,
-             completed_at = CASE WHEN $4 = 'COMPLETE' OR $4 = 'PARTIAL' THEN NOW() ELSE completed_at END
+             completed_at = CASE WHEN $4 = 'COMPLETE' OR $4 = 'PARTIAL' OR $4 = 'FAILED' THEN NOW() ELSE completed_at END
        WHERE id = $5`,
       [totalRows, newSuccess, newError, finalStatus, jobId]
     );
-    const error_counts = Array.from(errMap.entries()).map(([message, count]) => ({ message, count })).sort((a, b) => b.count - a.count).slice(0, 10);
+    const error_counts = Array.from(errMap.entries())
+      .map(([message, count]) => ({ message, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 10);
     res.json({
       done: isDone,
       processed: slice.length,
