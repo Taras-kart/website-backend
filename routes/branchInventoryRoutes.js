@@ -279,11 +279,6 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
         if (EANCode != null && EANCode !== '') EANCode = cleanText(EANCode);
 
         if (isSummaryOrBlankRow(raw, ProductName, BrandName, SIZE, COLOUR, row)) {
-          await client.query(
-            `INSERT INTO import_rows (import_job_id, raw_row_json, status_enum, error_msg)
-             VALUES ($1, $2::jsonb, $3, $4)`,
-            [jobId, JSON.stringify(raw), 'SKIP', null]
-          );
           continue;
         }
 
