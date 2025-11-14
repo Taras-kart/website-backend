@@ -50,6 +50,14 @@ function normalizeRow(raw) {
       }
     }
   }
+  if (!out.productname && raw['__EMPTY']) out.productname = raw['__EMPTY'];
+  if (!out.brandname && raw['__EMPTY_1']) out.brandname = raw['__EMPTY_1'];
+  if (out.purchaseqty == null && raw['__EMPTY_2'] != null) out.purchaseqty = raw['__EMPTY_2'];
+  if (!out.eancode && raw['__EMPTY_3']) out.eancode = raw['__EMPTY_3'];
+  if (out.mrp == null && raw['__EMPTY_4'] != null) out.mrp = raw['__EMPTY_4'];
+  if (!out.size && raw['__EMPTY_5']) out.size = raw['__EMPTY_5'];
+  if (!out.colour && raw['__EMPTY_6']) out.colour = raw['__EMPTY_6'];
+  if (!out.pattern && raw['__EMPTY_7']) out.pattern = raw['__EMPTY_7'];
   return out;
 }
 
