@@ -114,6 +114,22 @@ function uploadBufferToCloudinary(buffer, folder, publicId) {
   });
 }
 
+function isSummaryOrBlankRow(raw, ProductName, BrandName, SIZE, COLOUR, row) {
+  const summary = cleanText(raw['Stock Summary'] || raw['stock summary'] || '');
+  const allMainEmpty = !ProductName && !BrandName && !SIZE && !COLOUR;
+  const hasAnyDataField =
+    cleanText(row.eancode) ||
+    toNumOrNull(row.mrp) != null ||
+    toNumOrNull(row.rsaleprice) != null ||
+    toIntOrZero(row.purchaseqty) !== 0;
+  if (allMainEmpty && !hasAnyDataField) return true;
+  const s = summary.toLowerCase();
+  if (!summary) return false;
+  if (s.startsWith('date between')) return true;
+  if (s.startsWith('| branchs')) return true;
+  return false;
+}
+
 router.get('/:branchId/import-jobs', requireBranchAuth, async (req, res) => {
   const branchId = parseInt(req.params.branchId, 10);
   if (!branchId || branchId !== Number(req.user.branch_id)) return res.status(403).json({ message: 'Forbidden' });
@@ -261,6 +277,16 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
         const PurchaseQty = toIntOrZero(row.purchaseqty);
         let EANCode = row.eancode;
         if (EANCode != null && EANCode !== '') EANCode = cleanText(EANCode);
+
+        if (isSummaryOrBlankRow(raw, ProductName, BrandName, SIZE, COLOUR, row)) {
+          await client.query(
+            `INSERT INTO import_rows (import_job_id, raw_row_json, status_enum, error_msg)
+             VALUES ($1, $2::jsonb, $3, $4)`,
+            [jobId, JSON.stringify(raw), 'SKIP', null]
+          );
+          continue;
+        }
+
         if (!ProductName || !BrandName || !SIZE || !COLOUR) {
           const msg = 'Missing required fields (ProductName/BrandName/SIZE/COLOUR)';
           err++;
