@@ -109,7 +109,8 @@ router.get('/', async (req, res) => {
     const genderQ = toGender(req.query.gender || req.query.category || '');
     const brand = req.query.brand ? String(req.query.brand).trim() : '';
     const q = req.query.q ? String(req.query.q).trim() : '';
-    const limit = Math.max(1, Math.min(500, parseInt(req.query.limit || '200', 10)));
+    const rawLimit = parseInt(req.query.limit || '200', 10);
+    const limit = Math.max(1, Math.min(50000, Number.isFinite(rawLimit) ? rawLimit : 200));
     const offset = Math.max(0, parseInt(req.query.offset || '0', 10));
     const wantRandom = String(req.query.random || '').trim() === '1';
     const wantHasImageOnly = String(req.query.hasImage || '').toLowerCase() === 'true';
