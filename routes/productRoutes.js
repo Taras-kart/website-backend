@@ -63,7 +63,13 @@ async function fetchImageList({ gender, limit }) {
         ORDER BY b2.id ASC
         LIMIT 1
       ) bc_any ON TRUE
-      LEFT JOIN product_images pi ON pi.ean_code = COALESCE(bc_self.ean_code, bc_any.ean_code)
+      LEFT JOIN LATERAL (
+        SELECT image_url
+        FROM product_images pi
+        WHERE pi.ean_code = COALESCE(bc_self.ean_code, bc_any.ean_code)
+        ORDER BY uploaded_at DESC
+        LIMIT 1
+      ) pi ON TRUE
       WHERE ${where}
     )
     SELECT
@@ -181,7 +187,13 @@ router.get('/', async (req, res) => {
         ORDER BY b2.id ASC
         LIMIT 1
       ) bc_any ON TRUE
-      LEFT JOIN product_images pi ON pi.ean_code = COALESCE(bc_self.ean_code, bc_any.ean_code)
+      LEFT JOIN LATERAL (
+        SELECT image_url
+        FROM product_images pi
+        WHERE pi.ean_code = COALESCE(bc_self.ean_code, bc_any.ean_code)
+        ORDER BY uploaded_at DESC
+        LIMIT 1
+      ) pi ON TRUE
       WHERE ${where}
       ${orderBy}
       LIMIT $${limIdx} OFFSET $${offIdx}
@@ -258,7 +270,13 @@ router.get('/category/:category', async (req, res) => {
         ORDER BY b2.id ASC
         LIMIT 1
       ) bc_any ON TRUE
-      LEFT JOIN product_images pi ON pi.ean_code = COALESCE(bc_self.ean_code, bc_any.ean_code)
+      LEFT JOIN LATERAL (
+        SELECT image_url
+        FROM product_images pi
+        WHERE pi.ean_code = COALESCE(bc_self.ean_code, bc_any.ean_code)
+        ORDER BY uploaded_at DESC
+        LIMIT 1
+      ) pi ON TRUE
       WHERE ${where}
       ${orderBy}
     `;
@@ -334,7 +352,13 @@ router.get('/gender/:gender', async (req, res) => {
         ORDER BY b2.id ASC
         LIMIT 1
       ) bc_any ON TRUE
-      LEFT JOIN product_images pi ON pi.ean_code = COALESCE(bc_self.ean_code, bc_any.ean_code)
+      LEFT JOIN LATERAL (
+        SELECT image_url
+        FROM product_images pi
+        WHERE pi.ean_code = COALESCE(bc_self.ean_code, bc_any.ean_code)
+        ORDER BY uploaded_at DESC
+        LIMIT 1
+      ) pi ON TRUE
       WHERE ${where}
       ${orderBy}
     `;
@@ -398,7 +422,13 @@ router.get('/search', async (req, res) => {
          ORDER BY b2.id ASC
          LIMIT 1
        ) bc_any ON TRUE
-       LEFT JOIN product_images pi ON pi.ean_code = COALESCE(bc_self.ean_code, bc_any.ean_code)
+       LEFT JOIN LATERAL (
+         SELECT image_url
+         FROM product_images pi
+         WHERE pi.ean_code = COALESCE(bc_self.ean_code, bc_any.ean_code)
+         ORDER BY uploaded_at DESC
+         LIMIT 1
+       ) pi ON TRUE
        WHERE v.is_active = TRUE
          AND (
            p.name ILIKE $1
@@ -487,7 +517,13 @@ router.get('/:id(\\d+)', async (req, res) => {
          ORDER BY b2.id ASC
          LIMIT 1
        ) bc_any ON TRUE
-       LEFT JOIN product_images pi ON pi.ean_code = COALESCE(bc_self.ean_code, bc_any.ean_code)
+       LEFT JOIN LATERAL (
+         SELECT image_url
+         FROM product_images pi
+         WHERE pi.ean_code = COALESCE(bc_self.ean_code, bc_any.ean_code)
+         ORDER BY uploaded_at DESC
+         LIMIT 1
+       ) pi ON TRUE
        WHERE v.id = $1`,
       [req.params.id, cloud]
     );

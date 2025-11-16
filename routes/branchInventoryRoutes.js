@@ -40,9 +40,9 @@ function normalizeRow(raw) {
     const key = String(k).trim().toLowerCase();
     out[key] = v;
   }
-  for (const canon of Object.keys(HEADER_ALIASES)) {
+  for (const [canon, aliases] of Object.entries(HEADER_ALIASES)) {
     if (out[canon] != null && out[canon] !== '') continue;
-    for (const alias of HEADER_ALIASES[canon]) {
+    for (const alias of aliases) {
       const a = String(alias).trim().toLowerCase();
       if (out[a] != null && out[a] !== '') {
         out[canon] = out[a];
@@ -422,11 +422,11 @@ router.post('/:branchId/upload-images', requireBranchAuth, upload.single('images
       entry.on('end', () => {
         const buf = Buffer.concat(chunks);
         const ean = extractEANFromName(fileName);
-        const base = path.basename(fileName, ext).replace(/[^\w-]+/g, '_');
-        const publicId = ean || base;
+        if (!ean) return;
+        const publicId = ean;
         const folder = `products`;
         const t = uploadBufferToCloudinary(buf, folder, publicId).then((r) => {
-          uploaded.push({ fileName, secure_url: r.secure_url, public_id: r.public_id, ean: ean || null });
+          uploaded.push({ fileName, secure_url: r.secure_url, public_id: r.public_id, ean });
         });
         tasks.push(t);
       });
@@ -445,7 +445,6 @@ router.post('/:branchId/upload-images', requireBranchAuth, upload.single('images
       try {
         await client.query('BEGIN');
         for (const img of uploaded) {
-          if (!img.ean) continue;
           await client.query(
             `INSERT INTO product_images (ean_code, image_url, uploaded_at)
              VALUES ($1, $2, NOW())
