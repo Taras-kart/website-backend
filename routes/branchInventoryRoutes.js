@@ -9,7 +9,6 @@ const unzipper = require('unzipper');
 const { v2: cloudinary } = require('cloudinary');
 const path = require('path');
 const stream = require('stream');
-const crypto = require('crypto');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 200 * 1024 * 1024 } });
@@ -129,101 +128,6 @@ function isSummaryOrBlankRow(raw, ProductName, BrandName, SIZE, COLOUR, row) {
   if (s.startsWith('date between')) return true;
   if (s.startsWith('| branchs')) return true;
   return false;
-}
-
-function cloudinarySignature(paramsToSign) {
-  const sorted = Object.keys(paramsToSign).sort().map(k => `${k}=${paramsToSign[k]}`).join('&');
-  const toSign = `${sorted}${process.env.CLOUDINARY_API_SECRET}`;
-  return crypto.createHash('sha1').update(toSign).digest('hex');
-}
-
-async function fetchImageList({ gender, limit }) {
-  const params = [];
-  let where = 'v.is_active = TRUE';
-  if (gender) {
-    params.push(gender);
-    where += ` AND p.gender = $${params.length}`;
-  }
-  const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh';
-  params.push(cloud);
-  const cloudIdx = params.length;
-  params.push(limit);
-  const limIdx = params.length;
-  const addHasImageWhere = (w) => `
-    (${w})
-    AND (
-      (NULLIF(v.image_url,'') IS NOT NULL AND v.image_url NOT LIKE '/images/%')
-      OR (NULLIF(pi.image_url,'') IS NOT NULL AND pi.image_url NOT LIKE '/images/%')
-      OR COALESCE(bc_self.ean_code, bc_any.ean_code, '') <> ''
-    )
-  `;
-  where = addHasImageWhere(where);
-  const sql = `
-    WITH base AS (
-      SELECT
-        v.id AS id,
-        p.id AS product_id,
-        p.name AS product_name,
-        p.brand_name AS brand,
-        p.gender AS gender,
-        v.colour AS color,
-        v.size AS size,
-        COALESCE(bc_self.ean_code, bc_any.ean_code, '') AS ean_code,
-        v.image_url AS v_image,
-        pi.image_url AS pi_image
-      FROM products p
-      JOIN product_variants v ON v.product_id = p.id
-      LEFT JOIN LATERAL (
-        SELECT ean_code FROM barcodes b WHERE b.variant_id = v.id ORDER BY id ASC LIMIT 1
-      ) bc_self ON TRUE
-      LEFT JOIN LATERAL (
-        SELECT b2.ean_code
-        FROM product_variants v2
-        JOIN products p2 ON p2.id = v2.product_id
-        JOIN barcodes b2 ON b2.variant_id = v2.id
-        WHERE p2.name = p.name AND p2.brand_name = p.brand_name AND v2.size = v.size AND v2.colour = v.colour
-        ORDER BY b2.id ASC
-        LIMIT 1
-      ) bc_any ON TRUE
-      LEFT JOIN LATERAL (
-        SELECT image_url
-        FROM product_images pi
-        WHERE pi.ean_code = COALESCE(bc_self.ean_code, bc_any.ean_code)
-        ORDER BY uploaded_at DESC
-        LIMIT 1
-      ) pi ON TRUE
-      WHERE ${where}
-    )
-    SELECT
-      id,
-      product_id,
-      product_name,
-      brand,
-      gender,
-      color,
-      size,
-      COALESCE(
-        NULLIF(v_image,''),
-        NULLIF(pi_image,''),
-        CASE
-          WHEN ean_code <> '' THEN CONCAT('https://res.cloudinary.com/', $${cloudIdx}::text, '/image/upload/f_auto,q_auto/products/', ean_code)
-          ELSE NULL
-        END
-      ) AS image_url
-    FROM base
-    WHERE COALESCE(
-      NULLIF(v_image,''),
-      NULLIF(pi_image,''),
-      CASE
-        WHEN ean_code <> '' THEN CONCAT('https://res.cloudinary.com/', $${cloudIdx}::text, '/image/upload/f_auto,q_auto/products/', ean_code)
-        ELSE NULL
-      END
-    ) IS NOT NULL
-    ORDER BY RANDOM()
-    LIMIT $${limIdx}
-  `;
-  const { rows } = await pool.query(sql, params);
-  return rows;
 }
 
 router.get('/:branchId/import-jobs', requireBranchAuth, async (req, res) => {
@@ -373,8 +277,11 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
         const PurchaseQty = toIntOrZero(row.purchaseqty);
         let EANCode = row.eancode;
         if (EANCode != null && EANCode !== '') EANCode = cleanText(EANCode);
-        const summaryLike = isSummaryOrBlankRow(raw, ProductName, BrandName, SIZE, COLOUR, row);
-        if (summaryLike) continue;
+
+        if (isSummaryOrBlankRow(raw, ProductName, BrandName, SIZE, COLOUR, row)) {
+          continue;
+        }
+
         if (!ProductName || !BrandName || !SIZE || !COLOUR) {
           const msg = 'Missing required fields (ProductName/BrandName/SIZE/COLOUR)';
           err++;
@@ -421,7 +328,7 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
              VALUES ($1, $2, $3, 0, TRUE)
              ON CONFLICT (branch_id, variant_id)
              DO UPDATE SET on_hand = branch_variant_stock.on_hand + EXCLUDED.on_hand, is_active = TRUE`,
-            [branchId, variantId, toIntOrZero(row.purchaseqty)]
+            [branchId, variantId, PurchaseQty]
           );
           await client.query(
             `INSERT INTO import_rows (import_job_id, raw_row_json, status_enum, error_msg)
@@ -452,9 +359,13 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
     const isDone = rowsDone >= totalRows;
     let finalStatus = 'PENDING';
     if (isDone) {
-      if (newSuccess === 0 && newError > 0) finalStatus = 'FAILED';
-      else if (newError > 0) finalStatus = 'PARTIAL';
-      else finalStatus = 'COMPLETE';
+      if (newSuccess === 0 && newError > 0) {
+        finalStatus = 'FAILED';
+      } else if (newError > 0) {
+        finalStatus = 'PARTIAL';
+      } else {
+        finalStatus = 'COMPLETE';
+      }
     }
     await pool.query(
       `UPDATE import_jobs
@@ -485,93 +396,129 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
   }
 });
 
-router.post('/:branchId/cloudinary-sign', requireBranchAuth, async (req, res) => {
+router.post('/:branchId/upload-images', requireBranchAuth, upload.single('imagesZip'), async (req, res) => {
   const branchId = parseInt(req.params.branchId, 10);
   if (!branchId || branchId !== Number(req.user.branch_id)) return res.status(403).json({ message: 'Forbidden' });
-  const ean = extractEANFromName(req.body?.ean || '');
-  if (!ean) return res.status(400).json({ message: 'EAN required' });
-  const cloud_name = process.env.CLOUDINARY_CLOUD_NAME;
-  const api_key = process.env.CLOUDINARY_API_KEY;
-  const api_secret = process.env.CLOUDINARY_API_SECRET;
-  if (!cloud_name || !api_key || !api_secret) return res.status(500).json({ message: 'Cloudinary not configured' });
-  const timestamp = Math.floor(Date.now() / 1000);
-  const folder = 'products';
-  const public_id = ean;
-  const paramsToSign = { folder, public_id, timestamp };
-  const signature = cloudinarySignature(paramsToSign);
-  res.json({ cloud_name, api_key, timestamp, folder, public_id, signature });
-});
-
-router.post('/:branchId/images/confirm', requireBranchAuth, async (req, res) => {
-  const branchId = parseInt(req.params.branchId, 10);
-  if (!branchId || branchId !== Number(req.user.branch_id)) return res.status(403).json({ message: 'Forbidden' });
-  const images = Array.isArray(req.body?.images) ? req.body.images : [];
-  if (!images.length) return res.status(400).json({ message: 'No images' });
+  if (!req.file) return res.status(400).json({ message: 'ZIP file required' });
   try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS product_images (
-        ean_code text PRIMARY KEY,
-        image_url text NOT NULL,
-        uploaded_at timestamptz DEFAULT now()
-      )
-    `);
-    const client = await pool.connect();
-    let updated = 0;
-    try {
-      await client.query('BEGIN');
-      for (const img of images) {
-        const ean = extractEANFromName(img.ean || '');
-        const url = String(img.secure_url || '').trim();
-        if (!ean || !url) continue;
-        await client.query(
-          `INSERT INTO product_images (ean_code, image_url, uploaded_at)
-           VALUES ($1, $2, NOW())
-           ON CONFLICT (ean_code) DO UPDATE SET image_url = EXCLUDED.image_url, uploaded_at = NOW()`,
-          [ean, url]
-        );
-        await client.query(
-          `UPDATE product_variants v
-             SET image_url = $2
-           FROM barcodes b
-           WHERE b.variant_id = v.id AND b.ean_code = $1`,
-          [ean, url]
-        );
-        updated += 1;
+    const zipBuffer = req.file.buffer;
+    const zipStream = unzipper.Parse({ forceStream: true });
+    const bufferStream = new stream.PassThrough();
+    bufferStream.end(zipBuffer);
+    bufferStream.pipe(zipStream);
+
+    const uploaded = [];
+    const tasks = [];
+
+    zipStream.on('entry', (entry) => {
+      const fileName = entry.path;
+      const ext = path.extname(fileName).toLowerCase();
+      if (!['.jpg', '.jpeg', '.png', '.webp'].includes(ext)) {
+        entry.autodrain();
+        return;
       }
-      await client.query('COMMIT');
-    } catch (e) {
-      await client.query('ROLLBACK');
-      return res.status(500).json({ message: e.message || 'DB error' });
-    } finally {
-      client.release();
-    }
-    res.json({ totalUpdated: updated });
+      const chunks = [];
+      entry.on('data', (c) => chunks.push(c));
+      entry.on('end', () => {
+        const buf = Buffer.concat(chunks);
+        const ean = extractEANFromName(fileName);
+        if (!ean) return;
+        const publicId = ean;
+        const folder = `products`;
+        const t = uploadBufferToCloudinary(buf, folder, publicId).then((r) => {
+          uploaded.push({ fileName, secure_url: r.secure_url, public_id: r.public_id, ean });
+        });
+        tasks.push(t);
+      });
+    });
+
+    zipStream.on('close', async () => {
+      await Promise.all(tasks);
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS product_images (
+          ean_code text PRIMARY KEY,
+          image_url text NOT NULL,
+          uploaded_at timestamptz DEFAULT now()
+        )
+      `);
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        for (const img of uploaded) {
+          await client.query(
+            `INSERT INTO product_images (ean_code, image_url, uploaded_at)
+             VALUES ($1, $2, NOW())
+             ON CONFLICT (ean_code) DO UPDATE SET image_url = EXCLUDED.image_url, uploaded_at = NOW()`,
+            [img.ean, img.secure_url]
+          );
+          await client.query(
+            `UPDATE product_variants v
+               SET image_url = $2
+             FROM barcodes b
+             WHERE b.variant_id = v.id AND b.ean_code = $1`,
+            [img.ean, img.secure_url]
+          );
+        }
+        await client.query('COMMIT');
+      } catch (e) {
+        await client.query('ROLLBACK');
+        return res.status(500).json({ message: e.message || 'DB error' });
+      } finally {
+        client.release();
+      }
+      res.json({ totalUploaded: uploaded.length, images: uploaded });
+    });
+
+    zipStream.on('error', (e) => res.status(500).json({ message: e.message || 'ZIP parse error' }));
   } catch (e) {
     res.status(500).json({ message: e.message || 'Server error' });
   }
 });
 
-router.get('/hero-images', async (req, res) => {
+router.get('/:branchId/stock', requireBranchAuth, async (req, res) => {
+  const branchId = parseInt(req.params.branchId, 10);
+  if (!branchId || branchId !== Number(req.user.branch_id)) return res.status(403).json({ message: 'Forbidden' });
+  const gender = normGender(req.query.gender || '');
   try {
-    const limit = Math.max(1, Math.min(120, parseInt(req.query.limit || '60', 10)));
-    const rows = await fetchImageList({ gender: null, limit });
+    const params = [branchId];
+    let where = `bvs.branch_id = $1 AND bvs.is_active = TRUE`;
+    if (gender) {
+      params.push(gender);
+      where += ` AND p.gender = $${params.length}`;
+    }
+    const { rows } = await pool.query(
+      `SELECT
+         p.id AS product_id,
+         p.name AS product_name,
+         p.brand_name,
+         p.pattern_code,
+         p.fit_type,
+         p.mark_code,
+         p.gender,
+         v.id AS variant_id,
+         v.size,
+         v.colour,
+         v.mrp,
+         v.sale_price,
+         v.cost_price,
+         bvs.on_hand,
+         bvs.reserved,
+         COALESCE(bc.ean_code,'') AS ean_code,
+         COALESCE(v.image_url, pi.image_url, '') AS image_url
+       FROM branch_variant_stock bvs
+       JOIN product_variants v ON v.id = bvs.variant_id
+       JOIN products p ON p.id = v.product_id
+       LEFT JOIN LATERAL (
+         SELECT ean_code FROM barcodes bc WHERE bc.variant_id = v.id ORDER BY id ASC LIMIT 1
+       ) bc ON TRUE
+       LEFT JOIN product_images pi ON pi.ean_code = bc.ean_code
+       WHERE ${where}
+       ORDER BY p.brand_name, p.name, v.size, v.colour`,
+      params
+    );
     res.json(rows);
-  } catch (err) {
-    res.status(500).json({ message: 'Server error', error: err.message });
-  }
-});
-
-router.get('/section-images', async (req, res) => {
-  try {
-    const limitHero = Math.max(1, Math.min(120, parseInt(req.query.limitHero || '30', 10)));
-    const limitGender = Math.max(1, Math.min(80, parseInt(req.query.limitGender || '40', 10)));
-    const hero = await fetchImageList({ gender: null, limit: limitHero });
-    const women = await fetchImageList({ gender: 'WOMEN', limit: limitGender });
-    const men = await fetchImageList({ gender: 'MEN', limit: limitGender });
-    const kids = await fetchImageList({ gender: 'KIDS', limit: limitGender });
-    res.json({ hero, women, men, kids });
-  } catch (err) {
-    res.status(500).json({ message: 'Server error', error: err.message });
+  } catch {
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
