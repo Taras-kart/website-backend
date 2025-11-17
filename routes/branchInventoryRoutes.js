@@ -10,10 +10,10 @@ const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 200 * 1024 * 1024 } });
 
 const HEADER_ALIASES = {
-  productname: ['product name', 'item', 'item name', 'productname'],
+  productname: ['product', 'product name', 'item', 'item name', 'productname'],
   brandname: ['brand', 'brand name', 'brandname'],
   costprice: ['cost', 'purchase cost', 'costprice'],
-  purchaseqty: ['qty', 'quantity', 'purchase qty', 'purchaseqty'],
+  purchaseqty: ['clqty', 'qty', 'quantity', 'purchase qty', 'purchaseqty'],
   eancode: ['ean', 'barcode', 'bar code', 'ean code', 'eancode'],
   mrp: ['mrp', '   mrp', 'mrp ', ' retail mrp ', 'mrp'],
   rsaleprice: ['retailprice', 'saleprice', 'sale price', 'retail price', 'rsp', 'rsaleprice'],
