@@ -223,7 +223,7 @@ router.get('/', async (req, res) => {
           BOOL_OR(is_active) AS is_active
         FROM branch_variant_stock bvs
         WHERE bvs.variant_id = v.id
-          AND ($${branchIdx} IS NULL OR bvs.branch_id = $${branchIdx})
+          AND ($${branchIdx}::int IS NULL OR bvs.branch_id = $${branchIdx}::int)
       ) bvs ON TRUE
       WHERE ${where}
       ${orderBy}
@@ -332,7 +332,7 @@ router.get('/category/:category', async (req, res) => {
           BOOL_OR(is_active) AS is_active
         FROM branch_variant_stock bvs
         WHERE bvs.variant_id = v.id
-          AND ($${branchIdx} IS NULL OR bvs.branch_id = $${branchIdx})
+          AND ($${branchIdx}::int IS NULL OR bvs.branch_id = $${branchIdx}::int)
       ) bvs ON TRUE
       WHERE ${where}
       ${orderBy}
@@ -440,7 +440,7 @@ router.get('/gender/:gender', async (req, res) => {
           BOOL_OR(is_active) AS is_active
         FROM branch_variant_stock bvs
         WHERE bvs.variant_id = v.id
-          AND ($${branchIdx} IS NULL OR bvs.branch_id = $${branchIdx})
+          AND ($${branchIdx}::int IS NULL OR bvs.branch_id = $${branchIdx}::int)
       ) bvs ON TRUE
       WHERE ${where}
       ${orderBy}
@@ -538,7 +538,7 @@ router.get('/search', async (req, res) => {
            BOOL_OR(is_active) AS is_active
          FROM branch_variant_stock bvs
          WHERE bvs.variant_id = v.id
-           AND ($${branchIdx} IS NULL OR bvs.branch_id = $${branchIdx})
+           AND ($${branchIdx}::int IS NULL OR bvs.branch_id = $${branchIdx}::int)
        ) bvs ON TRUE
        WHERE v.is_active = TRUE
          AND (
@@ -660,7 +660,7 @@ router.get('/:id(\\d+)', async (req, res) => {
            BOOL_OR(is_active) AS is_active
          FROM branch_variant_stock bvs
          WHERE bvs.variant_id = v.id
-           AND ($${branchIdx} IS NULL OR bvs.branch_id = $${branchIdx})
+           AND ($${branchIdx}::int IS NULL OR bvs.branch_id = $${branchIdx}::int)
        ) bvs ON TRUE
        WHERE v.id = $1`,
       [req.params.id, branchId, cloud]
