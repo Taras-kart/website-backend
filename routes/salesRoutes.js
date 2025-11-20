@@ -104,19 +104,96 @@ router.post('/web/place', async (req, res) => {
 })
 
 router.post('/web/set-payment-status', async (req, res) => {
+  const client = await pool.connect()
   try {
     const saleId = String(req.body.sale_id || '').trim()
     const status = String(req.body.status || '').trim().toUpperCase()
-    if (!saleId || !status) return res.status(400).json({ message: 'sale_id and status required' })
-    if (!['COD', 'PENDING', 'PAID', 'FAILED'].includes(status)) return res.status(400).json({ message: 'invalid status' })
-    const q = await pool.query(
-      `UPDATE sales SET payment_status=$2, updated_at=now() WHERE id=$1::uuid RETURNING id, payment_status`,
+    if (!saleId || !status) {
+      client.release()
+      return res.status(400).json({ message: 'sale_id and status required' })
+    }
+    if (!['COD', 'PENDING', 'PAID', 'FAILED'].includes(status)) {
+      client.release()
+      return res.status(400).json({ message: 'invalid status' })
+    }
+
+    await client.query('BEGIN')
+
+    const saleQ = await client.query(
+      'SELECT id, payment_status, branch_id FROM sales WHERE id = $1::uuid FOR UPDATE',
+      [saleId]
+    )
+    if (!saleQ.rowCount) {
+      await client.query('ROLLBACK')
+      client.release()
+      return res.status(404).json({ message: 'Sale not found' })
+    }
+
+    const currentStatus = String(saleQ.rows[0].payment_status || '').toUpperCase()
+    const branchId = saleQ.rows[0].branch_id ? Number(saleQ.rows[0].branch_id) : null
+
+    if (currentStatus === status) {
+      await client.query('COMMIT')
+      client.release()
+      return res.json({ id: saleQ.rows[0].id, payment_status: currentStatus })
+    }
+
+    if (status === 'PAID' && currentStatus !== 'PAID' && branchId) {
+      const itemsQ = await client.query(
+        'SELECT variant_id, qty FROM sale_items WHERE sale_id = $1::uuid',
+        [saleId]
+      )
+
+      if (itemsQ.rowCount) {
+        for (const row of itemsQ.rows) {
+          const vId = Number(row.variant_id)
+          const qty = Number(row.qty || 0)
+          if (!vId || qty <= 0) continue
+          const stockQ = await client.query(
+            'SELECT on_hand FROM branch_variant_stock WHERE branch_id = $1 AND variant_id = $2 FOR UPDATE',
+            [branchId, vId]
+          )
+          if (!stockQ.rowCount) {
+            await client.query('ROLLBACK')
+            client.release()
+            return res.status(400).json({ message: `Stock not found for variant ${vId}` })
+          }
+          const onHand = Number(stockQ.rows[0].on_hand || 0)
+          if (onHand < qty) {
+            await client.query('ROLLBACK')
+            client.release()
+            return res.status(400).json({ message: `Insufficient stock for variant ${vId}` })
+          }
+        }
+
+        for (const row of itemsQ.rows) {
+          const vId = Number(row.variant_id)
+          const qty = Number(row.qty || 0)
+          if (!vId || qty <= 0) continue
+          await client.query(
+            'UPDATE branch_variant_stock SET on_hand = on_hand - $3 WHERE branch_id = $1 AND variant_id = $2',
+            [branchId, vId, qty]
+          )
+        }
+      }
+    }
+
+    const q = await client.query(
+      'UPDATE sales SET payment_status=$2, updated_at=now() WHERE id=$1::uuid RETURNING id, payment_status',
       [saleId, status]
     )
-    if (!q.rowCount) return res.status(404).json({ message: 'Sale not found' })
+
+    await client.query('COMMIT')
     return res.json({ id: q.rows[0].id, payment_status: q.rows[0].payment_status })
   } catch {
+    try {
+      await pool.query('ROLLBACK')
+    } catch {}
     return res.status(500).json({ message: 'Server error' })
+  } finally {
+    try {
+      client.release()
+    } catch {}
   }
 })
 
