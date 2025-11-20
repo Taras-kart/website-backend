@@ -2,6 +2,11 @@ const express = require('express');
 const pool = require('../db');
 const router = express.Router();
 
+const WEB_BRANCH_ID = (() => {
+  const v = parseInt(process.env.WEB_BRANCH_ID || '', 10);
+  return Number.isFinite(v) && v > 0 ? v : null;
+})();
+
 const toGender = (v) => {
   const s = String(v || '').trim().toUpperCase();
   if (s === 'MEN' || s === 'WOMEN' || s === 'KIDS') return s;
@@ -133,6 +138,15 @@ router.get('/', async (req, res) => {
       where = addHasImageWhere(where);
     }
 
+    let branchId = WEB_BRANCH_ID;
+    const branchFromQuery = req.query.branch_id || req.query.branchId;
+    if (branchFromQuery) {
+      const parsed = parseInt(branchFromQuery, 10);
+      if (Number.isFinite(parsed) && parsed > 0) branchId = parsed;
+    }
+    params.push(branchId);
+    const branchIdx = params.length;
+
     const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh';
     params.push(cloud);
     const cloudIdx = params.length;
@@ -159,6 +173,13 @@ router.get('/', async (req, res) => {
         v.mrp::numeric AS mrp,
         v.sale_price::numeric AS sale_price,
         COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
+        COALESCE(bvs.on_hand, 0)::int AS on_hand,
+        COALESCE(bvs.reserved, 0)::int AS reserved,
+        GREATEST(COALESCE(bvs.on_hand, 0) - COALESCE(bvs.reserved, 0), 0)::int AS available_qty,
+        CASE
+          WHEN COALESCE(bvs.on_hand, 0) - COALESCE(bvs.reserved, 0) > 0 AND bvs.is_active IS TRUE THEN TRUE
+          ELSE FALSE
+        END AS in_stock,
         COALESCE(bc_self.ean_code, bc_any.ean_code, '') AS ean_code,
         COALESCE(
           NULLIF(v.image_url, ''),
@@ -195,6 +216,15 @@ router.get('/', async (req, res) => {
         ORDER BY uploaded_at DESC
         LIMIT 1
       ) pi ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT
+          SUM(on_hand) AS on_hand,
+          SUM(reserved) AS reserved,
+          BOOL_OR(is_active) AS is_active
+        FROM branch_variant_stock bvs
+        WHERE bvs.variant_id = v.id
+          AND ($${branchIdx} IS NULL OR bvs.branch_id = $${branchIdx})
+      ) bvs ON TRUE
       WHERE ${where}
       ${orderBy}
       LIMIT $${limIdx} OFFSET $${offIdx}
@@ -220,6 +250,16 @@ router.get('/category/:category', async (req, res) => {
     if (wantHasImageOnly) {
       where = addHasImageWhere(where);
     }
+
+    let branchId = WEB_BRANCH_ID;
+    const branchFromQuery = req.query.branch_id || req.query.branchId;
+    if (branchFromQuery) {
+      const parsed = parseInt(branchFromQuery, 10);
+      if (Number.isFinite(parsed) && parsed > 0) branchId = parsed;
+    }
+    params.push(branchId);
+    const branchIdx = params.length;
+
     const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh';
     params.push(cloud);
     const cloudIdx = params.length;
@@ -242,6 +282,13 @@ router.get('/category/:category', async (req, res) => {
         v.mrp::numeric AS mrp,
         v.sale_price::numeric AS sale_price,
         COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
+        COALESCE(bvs.on_hand, 0)::int AS on_hand,
+        COALESCE(bvs.reserved, 0)::int AS reserved,
+        GREATEST(COALESCE(bvs.on_hand, 0) - COALESCE(bvs.reserved, 0), 0)::int AS available_qty,
+        CASE
+          WHEN COALESCE(bvs.on_hand, 0) - COALESCE(bvs.reserved, 0) > 0 AND bvs.is_active IS TRUE THEN TRUE
+          ELSE FALSE
+        END AS in_stock,
         COALESCE(bc_self.ean_code, bc_any.ean_code, '') AS ean_code,
         COALESCE(
           NULLIF(v.image_url, ''),
@@ -278,6 +325,15 @@ router.get('/category/:category', async (req, res) => {
         ORDER BY uploaded_at DESC
         LIMIT 1
       ) pi ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT
+          SUM(on_hand) AS on_hand,
+          SUM(reserved) AS reserved,
+          BOOL_OR(is_active) AS is_active
+        FROM branch_variant_stock bvs
+        WHERE bvs.variant_id = v.id
+          AND ($${branchIdx} IS NULL OR bvs.branch_id = $${branchIdx})
+      ) bvs ON TRUE
       WHERE ${where}
       ${orderBy}
     `;
@@ -302,6 +358,16 @@ router.get('/gender/:gender', async (req, res) => {
     if (wantHasImageOnly) {
       where = addHasImageWhere(where);
     }
+
+    let branchId = WEB_BRANCH_ID;
+    const branchFromQuery = req.query.branch_id || req.query.branchId;
+    if (branchFromQuery) {
+      const parsed = parseInt(branchFromQuery, 10);
+      if (Number.isFinite(parsed) && parsed > 0) branchId = parsed;
+    }
+    params.push(branchId);
+    const branchIdx = params.length;
+
     const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh';
     params.push(cloud);
     const cloudIdx = params.length;
@@ -324,6 +390,13 @@ router.get('/gender/:gender', async (req, res) => {
         v.mrp::numeric AS mrp,
         v.sale_price::numeric AS sale_price,
         COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
+        COALESCE(bvs.on_hand, 0)::int AS on_hand,
+        COALESCE(bvs.reserved, 0)::int AS reserved,
+        GREATEST(COALESCE(bvs.on_hand, 0) - COALESCE(bvs.reserved, 0), 0)::int AS available_qty,
+        CASE
+          WHEN COALESCE(bvs.on_hand, 0) - COALESCE(bvs.reserved, 0) > 0 AND bvs.is_active IS TRUE THEN TRUE
+          ELSE FALSE
+        END AS in_stock,
         COALESCE(bc_self.ean_code, bc_any.ean_code, '') AS ean_code,
         COALESCE(
           NULLIF(v.image_url, ''),
@@ -360,6 +433,15 @@ router.get('/gender/:gender', async (req, res) => {
         ORDER BY uploaded_at DESC
         LIMIT 1
       ) pi ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT
+          SUM(on_hand) AS on_hand,
+          SUM(reserved) AS reserved,
+          BOOL_OR(is_active) AS is_active
+        FROM branch_variant_stock bvs
+        WHERE bvs.variant_id = v.id
+          AND ($${branchIdx} IS NULL OR bvs.branch_id = $${branchIdx})
+      ) bvs ON TRUE
       WHERE ${where}
       ${orderBy}
     `;
@@ -377,7 +459,19 @@ router.get('/search', async (req, res) => {
       return res.status(400).json({ message: 'Search query is required' });
     }
     const term = `%${String(query).trim()}%`;
+
+    let branchId = WEB_BRANCH_ID;
+    const branchFromQuery = req.query.branch_id || req.query.branchId;
+    if (branchFromQuery) {
+      const parsed = parseInt(branchFromQuery, 10);
+      if (Number.isFinite(parsed) && parsed > 0) branchId = parsed;
+    }
+
     const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh';
+
+    const branchIdx = 2;
+    const cloudIdx = 3;
+
     const { rows } = await pool.query(
       `SELECT
          v.id AS id,
@@ -394,12 +488,19 @@ router.get('/search', async (req, res) => {
          v.mrp::numeric AS mrp,
          v.sale_price::numeric AS sale_price,
          COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
+         COALESCE(bvs.on_hand, 0)::int AS on_hand,
+         COALESCE(bvs.reserved, 0)::int AS reserved,
+         GREATEST(COALESCE(bvs.on_hand, 0) - COALESCE(bvs.reserved, 0), 0)::int AS available_qty,
+         CASE
+           WHEN COALESCE(bvs.on_hand, 0) - COALESCE(bvs.reserved, 0) > 0 AND bvs.is_active IS TRUE THEN TRUE
+           ELSE FALSE
+         END AS in_stock,
          COALESCE(bc_self.ean_code, bc_any.ean_code, '') AS ean_code,
          COALESCE(
            NULLIF(v.image_url, ''),
            NULLIF(pi.image_url, ''),
            CASE
-             WHEN COALESCE(bc_self.ean_code, bc_any.ean_code, '') <> '' THEN CONCAT('https://res.cloudinary.com/', $2::text, '/image/upload/f_auto,q_auto/products/', COALESCE(bc_self.ean_code, bc_any.ean_code))
+             WHEN COALESCE(bc_self.ean_code, bc_any.ean_code, '') <> '' THEN CONCAT('https://res.cloudinary.com/', $${cloudIdx}::text, '/image/upload/f_auto,q_auto/products/', COALESCE(bc_self.ean_code, bc_any.ean_code))
              ELSE NULL
            END,
            CASE
@@ -430,6 +531,15 @@ router.get('/search', async (req, res) => {
          ORDER BY uploaded_at DESC
          LIMIT 1
        ) pi ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT
+           SUM(on_hand) AS on_hand,
+           SUM(reserved) AS reserved,
+           BOOL_OR(is_active) AS is_active
+         FROM branch_variant_stock bvs
+         WHERE bvs.variant_id = v.id
+           AND ($${branchIdx} IS NULL OR bvs.branch_id = $${branchIdx})
+       ) bvs ON TRUE
        WHERE v.is_active = TRUE
          AND (
            p.name ILIKE $1
@@ -438,7 +548,7 @@ router.get('/search', async (req, res) => {
            OR p.gender ILIKE $1
          )
        ORDER BY v.id DESC`,
-      [term, cloud]
+      [term, branchId, cloud]
     );
     res.json(rows);
   } catch (err) {
@@ -472,7 +582,18 @@ router.get('/section-images', async (req, res) => {
 
 router.get('/:id(\\d+)', async (req, res) => {
   try {
+    let branchId = WEB_BRANCH_ID;
+    const branchFromQuery = req.query.branch_id || req.query.branchId;
+    if (branchFromQuery) {
+      const parsed = parseInt(branchFromQuery, 10);
+      if (Number.isFinite(parsed) && parsed > 0) branchId = parsed;
+    }
+
     const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh';
+
+    const branchIdx = 2;
+    const cloudIdx = 3;
+
     const { rows } = await pool.query(
       `SELECT
          v.id AS id,
@@ -489,12 +610,19 @@ router.get('/:id(\\d+)', async (req, res) => {
          v.mrp::numeric AS mrp,
          v.sale_price::numeric AS sale_price,
          COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
+         COALESCE(bvs.on_hand, 0)::int AS on_hand,
+         COALESCE(bvs.reserved, 0)::int AS reserved,
+         GREATEST(COALESCE(bvs.on_hand, 0) - COALESCE(bvs.reserved, 0), 0)::int AS available_qty,
+         CASE
+           WHEN COALESCE(bvs.on_hand, 0) - COALESCE(bvs.reserved, 0) > 0 AND bvs.is_active IS TRUE THEN TRUE
+           ELSE FALSE
+         END AS in_stock,
          COALESCE(bc_self.ean_code, bc_any.ean_code, '') AS ean_code,
          COALESCE(
            NULLIF(v.image_url, ''),
            NULLIF(pi.image_url, ''),
            CASE
-             WHEN COALESCE(bc_self.ean_code, bc_any.ean_code, '') <> '' THEN CONCAT('https://res.cloudinary.com/', $2::text, '/image/upload/f_auto,q_auto/products/', COALESCE(bc_self.ean_code, bc_any.ean_code))
+             WHEN COALESCE(bc_self.ean_code, bc_any.ean_code, '') <> '' THEN CONCAT('https://res.cloudinary.com/', $${cloudIdx}::text, '/image/upload/f_auto,q_auto/products/', COALESCE(bc_self.ean_code, bc_any.ean_code))
              ELSE NULL
            END,
            CASE
@@ -525,8 +653,17 @@ router.get('/:id(\\d+)', async (req, res) => {
          ORDER BY uploaded_at DESC
          LIMIT 1
        ) pi ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT
+           SUM(on_hand) AS on_hand,
+           SUM(reserved) AS reserved,
+           BOOL_OR(is_active) AS is_active
+         FROM branch_variant_stock bvs
+         WHERE bvs.variant_id = v.id
+           AND ($${branchIdx} IS NULL OR bvs.branch_id = $${branchIdx})
+       ) bvs ON TRUE
        WHERE v.id = $1`,
-      [req.params.id, cloud]
+      [req.params.id, branchId, cloud]
     );
     if (!rows.length) return res.status(404).json({ message: 'Not found' });
     res.json(rows[0]);
