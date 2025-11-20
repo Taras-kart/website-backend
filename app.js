@@ -32,10 +32,12 @@ const corsOptions = {
   credentials: true
 }
 
+const shiprocketPublicRoutes = require('./routes/shiprocketPublicRoutes')
+
 app.use(cors(corsOptions))
 app.options('*', cors(corsOptions))
 app.use(express.json())
-
+app.use('/api', shiprocketPublicRoutes)
 app.use('/api/upload', require('./routes/uploadRoutes'))
 app.use('/api/products', require('./routes/productRoutes'))
 app.use('/api/b2b-customers', require('./routes/b2bCustomerRoutes'))
