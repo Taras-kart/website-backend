@@ -15,7 +15,10 @@ class Shiprocket {
     const email = process.env.SHIPROCKET_API_USER_EMAIL;
     const password = process.env.SHIPROCKET_API_USER_PASSWORD;
     if (!email || !password) throw new Error('Missing Shiprocket API creds');
-    const { data } = await axios.post(`${ROOT.replace(/\/+$/, '')}/v1/external/auth/login`, { email, password });
+    const { data } = await axios.post(
+      `${ROOT.replace(/\/+$/, '')}/v1/external/auth/login`,
+      { email, password }
+    );
     if (!data || !data.token) throw new Error('Shiprocket login failed');
     this.token = data.token;
     this.fetchedAt = Date.now();
@@ -53,7 +56,11 @@ class Shiprocket {
       country: 'India',
       pin_code: branch.pincode
     };
-    const { data } = await this.api('post', '/settings/company/addpickup', payload);
+    const { data } = await this.api(
+      'post',
+      '/settings/company/addpickup',
+      payload
+    );
     return data;
   }
 
@@ -94,8 +101,13 @@ class Shiprocket {
   }
 
   async assignAWBAndLabel({ shipment_id }) {
-    const { data: awb } = await this.api('post', '/courier/assign/awb', { shipment_id });
-    const { data: label } = await this.api('post', '/courier/generate/label', { shipment_id: [shipment_id] });
+    const ids = Array.isArray(shipment_id) ? shipment_id : [shipment_id];
+    const { data: awb } = await this.api('post', '/courier/assign/awb', {
+      shipment_id: ids
+    });
+    const { data: label } = await this.api('post', '/courier/generate/label', {
+      shipment_id: ids
+    });
     return { awb, label };
   }
 
@@ -103,18 +115,26 @@ class Shiprocket {
     const ids = Array.isArray(shipment_id) ? shipment_id : [shipment_id];
     const payload = { shipment_id: ids };
     if (pickup_date) {
-      payload.pickup_date = Array.isArray(pickup_date) ? pickup_date : [pickup_date];
+      payload.pickup_date = Array.isArray(pickup_date)
+        ? pickup_date
+        : [pickup_date];
     }
     if (status) {
       payload.status = status;
     }
-    const { data } = await this.api('post', '/courier/generate/pickup', payload);
+    const { data } = await this.api(
+      'post',
+      '/courier/generate/pickup',
+      payload
+    );
     return data;
   }
 
   async generateManifest({ shipment_ids }) {
     const ids = Array.isArray(shipment_ids) ? shipment_ids : [shipment_ids];
-    const { data } = await this.api('post', '/manifests/generate', { shipment_id: ids });
+    const { data } = await this.api('post', '/manifests/generate', {
+      shipment_id: ids
+    });
     return data;
   }
 }
