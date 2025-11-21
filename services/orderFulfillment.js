@@ -8,17 +8,25 @@ function haversineKm(a, b) {
   const dLon = toRad((b.lng || 0) - (a.lng || 0));
   const lat1 = toRad(a.lat || 0);
   const lat2 = toRad(b.lat || 0);
-  const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
   return 2 * R * Math.asin(Math.sqrt(h));
 }
 
 async function customerLocFromSale(sale, pool) {
   if (sale.shipping_address?.lat && sale.shipping_address?.lng) {
-    return { lat: Number(sale.shipping_address.lat), lng: Number(sale.shipping_address.lng) };
+    return {
+      lat: Number(sale.shipping_address.lat),
+      lng: Number(sale.shipping_address.lng)
+    };
   }
   const pc = sale.shipping_address?.pincode || sale.pincode || null;
   if (!pc) return { lat: null, lng: null };
-  const { rows } = await pool.query('SELECT AVG(latitude)::float lat, AVG(longitude)::float lng FROM branches WHERE pincode=$1', [pc]);
+  const { rows } = await pool.query(
+    'SELECT AVG(latitude)::float lat, AVG(longitude)::float lng FROM branches WHERE pincode=$1',
+    [pc]
+  );
   return { lat: rows[0]?.lat || null, lng: rows[0]?.lng || null };
 }
 
@@ -37,11 +45,16 @@ async function pickBranchForItem(pool, variantId, qty, sale, customerLoc) {
   const rows = await candidateBranches(pool, variantId, qty);
   if (!rows.length) return null;
   const pincode = sale.shipping_address?.pincode || sale.pincode || null;
-  const samePin = pincode ? rows.filter((r) => String(r.pincode) === String(pincode)) : [];
+  const samePin = pincode
+    ? rows.filter((r) => String(r.pincode) === String(pincode))
+    : [];
   const poolRows = samePin.length ? samePin : rows;
   if (customerLoc.lat != null && customerLoc.lng != null) {
     const sorted = poolRows
-      .map((r) => ({ r, d: haversineKm({ lat: r.lat, lng: r.lng }, customerLoc) }))
+      .map((r) => ({
+        r,
+        d: haversineKm({ lat: r.lat, lng: r.lng }, customerLoc)
+      }))
       .sort((a, b) => a.d - b.d);
     return sorted[0].r.id;
   }
@@ -52,12 +65,21 @@ async function planShipmentsForOrder(sale, pool) {
   const loc = await customerLocFromSale(sale, pool);
   const groups = {};
   for (const it of sale.items) {
-    const branchId = await pickBranchForItem(pool, it.variant_id, it.qty, sale, loc);
+    const branchId = await pickBranchForItem(
+      pool,
+      it.variant_id,
+      it.qty,
+      sale,
+      loc
+    );
     if (!branchId) throw new Error(`Out of stock for variant ${it.variant_id}`);
     if (!groups[branchId]) groups[branchId] = [];
     groups[branchId].push(it);
   }
-  return Object.entries(groups).map(([branch_id, items]) => ({ branch_id: Number(branch_id), items }));
+  return Object.entries(groups).map(([branch_id, items]) => ({
+    branch_id: Number(branch_id),
+    items
+  }));
 }
 
 async function fulfillOrderWithShiprocket(sale, pool) {
@@ -66,16 +88,29 @@ async function fulfillOrderWithShiprocket(sale, pool) {
   const groups = await planShipmentsForOrder(sale, pool);
   const created = [];
   const manifestShipmentIds = [];
+
+  const payable =
+    typeof sale.totals === 'object' && sale.totals !== null
+      ? Number(sale.totals.payable || 0)
+      : 0;
+  const paymentMethodForShiprocket =
+    sale.payment_status === 'COD' && payable > 0 ? 'COD' : 'Prepaid';
+
   for (const group of groups) {
-    const wh = (await pool.query("SELECT * FROM shiprocket_warehouses WHERE name=$1 LIMIT 1", ['warehouse-2'])).rows[0];
-    if (!wh) throw new Error('No default Shiprocket warehouse warehouse-2 configured');
+    const wh = (
+      await pool.query(
+        'SELECT * FROM shiprocket_warehouses WHERE branch_id=$1',
+        [group.branch_id]
+      )
+    ).rows[0];
+    if (!wh) throw new Error(`No pickup mapped for branch ${group.branch_id}`);
     const channelOrderId = `${sale.id}-${group.branch_id}`;
     const data = await sr.createOrderShipment({
       channel_order_id: channelOrderId,
       pickup_location: wh.name,
       order: {
         items: group.items,
-        payment_method: sale.payment_status === 'COD' ? 'COD' : 'Prepaid'
+        payment_method: paymentMethodForShiprocket
       },
       customer: {
         name: sale.customer_name || 'Customer',
@@ -90,7 +125,9 @@ async function fulfillOrderWithShiprocket(sale, pool) {
         }
       }
     });
-    const shipmentId = Array.isArray(data?.shipment_id) ? data.shipment_id[0] : data?.shipment_id || null;
+    const shipmentId = Array.isArray(data?.shipment_id)
+      ? data.shipment_id[0]
+      : data?.shipment_id || null;
     let awb = null;
     let labelUrl = null;
     if (shipmentId) {
@@ -116,7 +153,12 @@ async function fulfillOrderWithShiprocket(sale, pool) {
         'CREATED'
       ]
     );
-    created.push({ branch_id: group.branch_id, shipment_id: shipmentId, awb, label_url: labelUrl });
+    created.push({
+      branch_id: group.branch_id,
+      shipment_id: shipmentId,
+      awb,
+      label_url: labelUrl
+    });
   }
   if (manifestShipmentIds.length) {
     await sr.generateManifest({ shipment_ids: manifestShipmentIds });
