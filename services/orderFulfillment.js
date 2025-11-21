@@ -65,9 +65,10 @@ async function fulfillOrderWithShiprocket(sale, pool) {
   await sr.init();
   const groups = await planShipmentsForOrder(sale, pool);
   const created = [];
+  const manifestShipmentIds = [];
   for (const group of groups) {
-    const wh = (await pool.query('SELECT * FROM shiprocket_warehouses WHERE branch_id=$1', [group.branch_id])).rows[0];
-    if (!wh) throw new Error(`No pickup mapped for branch ${group.branch_id}`);
+    const wh = (await pool.query("SELECT * FROM shiprocket_warehouses WHERE name=$1 LIMIT 1", ['warehouse-2'])).rows[0];
+    if (!wh) throw new Error('No default Shiprocket warehouse warehouse-2 configured');
     const channelOrderId = `${sale.id}-${group.branch_id}`;
     const data = await sr.createOrderShipment({
       channel_order_id: channelOrderId,
@@ -90,11 +91,14 @@ async function fulfillOrderWithShiprocket(sale, pool) {
       }
     });
     const shipmentId = Array.isArray(data?.shipment_id) ? data.shipment_id[0] : data?.shipment_id || null;
-    let awb = null, labelUrl = null;
+    let awb = null;
+    let labelUrl = null;
     if (shipmentId) {
       const res = await sr.assignAWBAndLabel({ shipment_id: shipmentId });
       awb = res.awb?.response?.data?.awb_code || null;
       labelUrl = res.label?.label_url || null;
+      manifestShipmentIds.push(shipmentId);
+      await sr.requestPickup({ shipment_id: shipmentId });
     }
     const sid = randomUUID();
     await pool.query(
@@ -113,6 +117,9 @@ async function fulfillOrderWithShiprocket(sale, pool) {
       ]
     );
     created.push({ branch_id: group.branch_id, shipment_id: shipmentId, awb, label_url: labelUrl });
+  }
+  if (manifestShipmentIds.length) {
+    await sr.generateManifest({ shipment_ids: manifestShipmentIds });
   }
   return created;
 }

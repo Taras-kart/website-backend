@@ -79,6 +79,23 @@ class Shiprocket {
     const { data: label } = await this.api('post', '/courier/generate/label', { shipment_id: [shipment_id] });
     return { awb, label };
   }
+
+  async requestPickup({ shipment_id, status }) {
+    const payload = {
+      shipment_id: Number(shipment_id)
+    };
+    if (status) {
+      payload.status = status;
+    }
+    const { data } = await this.api('post', '/courier/generate/pickup', payload);
+    return data;
+  }
+
+  async generateManifest({ shipment_ids }) {
+    const ids = Array.isArray(shipment_ids) ? shipment_ids : [shipment_ids];
+    const { data } = await this.api('post', '/manifests/generate', { shipment_id: ids });
+    return data;
+  }
 }
 
 module.exports = Shiprocket;
