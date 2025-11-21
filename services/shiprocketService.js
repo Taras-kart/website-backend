@@ -1,6 +1,7 @@
 const axios = require('axios');
 
 const BASE = 'https://apiv2.shiprocket.in/v1/external';
+const AUTH_BASE = process.env.SHIPROCKET_API_BASE || 'https://apiv2.shiprocket.in';
 
 class Shiprocket {
   constructor({ pool }) {
@@ -8,20 +9,51 @@ class Shiprocket {
     this.token = null;
   }
 
+  async loginAndStoreToken() {
+    const email = process.env.SHIPROCKET_API_USER_EMAIL;
+    const password = process.env.SHIPROCKET_API_USER_PASSWORD;
+    if (!email || !password) {
+      throw new Error('Missing Shiprocket API creds');
+    }
+    const { data } = await axios.post(`${AUTH_BASE}/v1/external/auth/login`, { email, password });
+    this.token = data.token;
+    await this.pool.query('INSERT INTO shiprocket_accounts(token) VALUES($1)', [this.token]);
+  }
+
   async init() {
-    const { rows } = await this.pool.query('SELECT token FROM shiprocket_accounts ORDER BY id LIMIT 1');
+    const { rows } = await this.pool.query('SELECT token FROM shiprocket_accounts ORDER BY id DESC LIMIT 1');
     this.token = rows[0]?.token || null;
-    if (!this.token) throw new Error('Shiprocket token missing');
+    if (!this.token) {
+      await this.loginAndStoreToken();
+    }
   }
 
   async api(method, path, data) {
-    if (!this.token) await this.init();
-    return axios({
+    if (!this.token) {
+      await this.init();
+    }
+    const cfg = {
       method,
       url: `${BASE}${path}`,
       data,
       headers: { Authorization: `Bearer ${this.token}` }
-    });
+    };
+    try {
+      return await axios(cfg);
+    } catch (err) {
+      const status = err.response?.status || err.status;
+      if (status === 401) {
+        await this.loginAndStoreToken();
+        const retryCfg = {
+          method,
+          url: `${BASE}${path}`,
+          data,
+          headers: { Authorization: `Bearer ${this.token}` }
+        };
+        return await axios(retryCfg);
+      }
+      throw err;
+    }
   }
 
   async upsertWarehouseFromBranch(branch) {
@@ -64,7 +96,10 @@ class Shiprocket {
         selling_price: Number(it.price || 0)
       })),
       payment_method: order.payment_method === 'COD' ? 'COD' : 'Prepaid',
-      sub_total: order.items.reduce((a, it) => a + Number(it.price || 0) * Number(it.qty || 0), 0),
+      sub_total: order.items.reduce(
+        (a, it) => a + Number(it.price || 0) * Number(it.qty || 0),
+        0
+      ),
       length: order.dimensions?.length || 10,
       breadth: order.dimensions?.breadth || 10,
       height: order.dimensions?.height || 5,
@@ -80,10 +115,12 @@ class Shiprocket {
     return { awb, label };
   }
 
-  async requestPickup({ shipment_id, status }) {
-    const payload = {
-      shipment_id: Number(shipment_id)
-    };
+  async requestPickup({ shipment_id, pickup_date, status }) {
+    const ids = Array.isArray(shipment_id) ? shipment_id : [shipment_id];
+    const payload = { shipment_id: ids };
+    if (pickup_date) {
+      payload.pickup_date = Array.isArray(pickup_date) ? pickup_date : [pickup_date];
+    }
     if (status) {
       payload.status = status;
     }
