@@ -1,59 +1,43 @@
 const axios = require('axios');
 
-const BASE = 'https://apiv2.shiprocket.in/v1/external';
-const AUTH_BASE = process.env.SHIPROCKET_API_BASE || 'https://apiv2.shiprocket.in';
+const ROOT = process.env.SHIPROCKET_API_BASE || 'https://apiv2.shiprocket.in';
+const BASE = `${ROOT.replace(/\/+$/, '')}/v1/external`;
 
 class Shiprocket {
   constructor({ pool }) {
     this.pool = pool;
     this.token = null;
+    this.fetchedAt = 0;
+    this.ttlMs = 25 * 60 * 1000;
   }
 
-  async loginAndStoreToken() {
+  async login() {
     const email = process.env.SHIPROCKET_API_USER_EMAIL;
     const password = process.env.SHIPROCKET_API_USER_PASSWORD;
-    if (!email || !password) {
-      throw new Error('Missing Shiprocket API creds');
-    }
-    const { data } = await axios.post(`${AUTH_BASE}/v1/external/auth/login`, { email, password });
+    if (!email || !password) throw new Error('Missing Shiprocket API creds');
+    const { data } = await axios.post(`${ROOT.replace(/\/+$/, '')}/v1/external/auth/login`, { email, password });
+    if (!data || !data.token) throw new Error('Shiprocket login failed');
     this.token = data.token;
-    await this.pool.query('INSERT INTO shiprocket_accounts(token) VALUES($1)', [this.token]);
+    this.fetchedAt = Date.now();
+  }
+
+  async ensureToken() {
+    if (this.token && Date.now() - this.fetchedAt < this.ttlMs) return;
+    await this.login();
   }
 
   async init() {
-    const { rows } = await this.pool.query('SELECT token FROM shiprocket_accounts ORDER BY id DESC LIMIT 1');
-    this.token = rows[0]?.token || null;
-    if (!this.token) {
-      await this.loginAndStoreToken();
-    }
+    await this.ensureToken();
   }
 
   async api(method, path, data) {
-    if (!this.token) {
-      await this.init();
-    }
-    const cfg = {
+    await this.ensureToken();
+    return axios({
       method,
       url: `${BASE}${path}`,
       data,
       headers: { Authorization: `Bearer ${this.token}` }
-    };
-    try {
-      return await axios(cfg);
-    } catch (err) {
-      const status = err.response?.status || err.status;
-      if (status === 401) {
-        await this.loginAndStoreToken();
-        const retryCfg = {
-          method,
-          url: `${BASE}${path}`,
-          data,
-          headers: { Authorization: `Bearer ${this.token}` }
-        };
-        return await axios(retryCfg);
-      }
-      throw err;
-    }
+    });
   }
 
   async upsertWarehouseFromBranch(branch) {
