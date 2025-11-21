@@ -21,10 +21,10 @@ router.post('/shiprocket/warehouses/import', async (req, res) => {
     for (const b of branches) {
       const bpincode = String(b.pincode || '').trim();
       let best = null;
-      if (bpincode) best = pickups.find(p => String(p.pin_code || '').trim() === bpincode);
+      if (bpincode) best = pickups.find((p) => String(p.pin_code || '').trim() === bpincode);
       if (!best && b.city) {
         const cityNorm = norm(b.city);
-        best = pickups.find(p => norm(p.city) === cityNorm);
+        best = pickups.find((p) => norm(p.city) === cityNorm);
       }
       if (!best) {
         results.push({ branch_id: b.id, error: 'No matching pickup found in Shiprocket' });
