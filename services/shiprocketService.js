@@ -101,10 +101,10 @@ class Shiprocket {
   }
 
   async assignAWBAndLabel({ shipment_id }) {
-    const { data: awb } = await this.api('post', '/courier/assign/awb', {
-      shipment_id
-    });
     const ids = Array.isArray(shipment_id) ? shipment_id : [shipment_id];
+    const { data: awb } = await this.api('post', '/courier/assign/awb', {
+      shipment_id: ids
+    });
     const { data: label } = await this.api('post', '/courier/generate/label', {
       shipment_id: ids
     });
