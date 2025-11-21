@@ -128,18 +128,39 @@ async function fulfillOrderWithShiprocket(sale, pool) {
     const shipmentId = Array.isArray(data?.shipment_id)
       ? data.shipment_id[0]
       : data?.shipment_id || null;
+
     let awb = null;
     let labelUrl = null;
+
     if (shipmentId) {
-      const res = await sr.assignAWBAndLabel({ shipment_id: shipmentId });
-      awb = res.awb?.response?.data?.awb_code || null;
-      labelUrl = res.label?.label_url || null;
-      manifestShipmentIds.push(shipmentId);
-      await sr.requestPickup({ shipment_id: shipmentId });
+      try {
+        const res = await sr.assignAWBAndLabel({ shipment_id: shipmentId });
+        awb = res.awb?.response?.data?.awb_code || null;
+        labelUrl = res.label?.label_url || null;
+        manifestShipmentIds.push(shipmentId);
+        await sr.requestPickup({ shipment_id: shipmentId });
+      } catch (err) {
+        console.error(
+          'AWB/label error for shipment',
+          shipmentId,
+          err?.response?.data || err?.message || err
+        );
+      }
     }
+
     const sid = randomUUID();
     await pool.query(
-      `INSERT INTO shipments(id, sale_id, branch_id, shiprocket_order_id, shiprocket_shipment_id, awb, label_url, tracking_url, status)
+      `INSERT INTO shipments(
+         id,
+         sale_id,
+         branch_id,
+         shiprocket_order_id,
+         shiprocket_shipment_id,
+         awb,
+         label_url,
+         tracking_url,
+         status
+       )
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
       [
         sid,
@@ -153,6 +174,7 @@ async function fulfillOrderWithShiprocket(sale, pool) {
         'CREATED'
       ]
     );
+
     created.push({
       branch_id: group.branch_id,
       shipment_id: shipmentId,
@@ -160,9 +182,11 @@ async function fulfillOrderWithShiprocket(sale, pool) {
       label_url: labelUrl
     });
   }
+
   if (manifestShipmentIds.length) {
     await sr.generateManifest({ shipment_ids: manifestShipmentIds });
   }
+
   return created;
 }
 
