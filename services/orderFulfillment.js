@@ -1,7 +1,7 @@
 const { randomUUID } = require('crypto');
 const Shiprocket = require('./shiprocketService');
 
-const DEFAULT_BRANCH_ID = 2;
+const FORCE_BRANCH_ID = 2;
 
 function haversineKm(a, b) {
   const toRad = (d) => (d * Math.PI) / 180;
@@ -47,15 +47,9 @@ async function pickBranchForItem(pool, variantId, qty, sale, customerLoc) {
   const rows = await candidateBranches(pool, variantId, qty);
   if (!rows.length) return null;
 
-  const forcedBranchId = sale.branch_id
-    ? Number(sale.branch_id)
-    : DEFAULT_BRANCH_ID
-    ? Number(DEFAULT_BRANCH_ID)
-    : null;
-
-  if (forcedBranchId != null) {
-    const match = rows.find((r) => Number(r.id) === forcedBranchId);
-    if (match) return forcedBranchId;
+  if (FORCE_BRANCH_ID != null) {
+    const forced = rows.find((r) => Number(r.id) === Number(FORCE_BRANCH_ID));
+    if (forced) return forced.id;
   }
 
   const pincode = sale.shipping_address?.pincode || sale.pincode || null;
@@ -76,6 +70,14 @@ async function pickBranchForItem(pool, variantId, qty, sale, customerLoc) {
 }
 
 async function planShipmentsForOrder(sale, pool) {
+  if (FORCE_BRANCH_ID != null) {
+    return [
+      {
+        branch_id: Number(FORCE_BRANCH_ID),
+        items: sale.items
+      }
+    ];
+  }
   const loc = await customerLocFromSale(sale, pool);
   const groups = {};
   for (const it of sale.items) {
