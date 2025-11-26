@@ -1,4 +1,3 @@
-// D:\shopping-backend\routes\cartRoutes.js
 const express = require('express');
 const pool = require('../db');
 const router = express.Router();
@@ -46,7 +45,11 @@ router.get('/:userId', async (req, res) => {
           v.size,
           v.colour                AS color,
           v.mrp::numeric          AS original_price_b2c,
-          v.sale_price::numeric   AS final_price_b2c,
+          CASE
+            WHEN v.sale_price IS NOT NULL AND v.sale_price::numeric > 0
+              THEN v.sale_price::numeric
+            ELSE v.mrp::numeric
+          END                    AS final_price_b2c,
           COALESCE(bc_self.ean_code, bc_any.ean_code, '') AS ean_code,
           v.image_url             AS v_image,
           pi.image_url            AS pi_image
