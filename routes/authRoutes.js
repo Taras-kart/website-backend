@@ -113,7 +113,6 @@ router.post('/forgot/reset', async (req, res) => {
     if (new Date(user.otp_expiry).getTime() < Date.now()) return res.status(400).json({ message: 'OTP expired' });
 
     await pool.query('UPDATE userstaras SET password = $1 WHERE email = $2', [newPassword, email]);
-
     await pool.query('UPDATE userstaras SET otp = NULL, otp_expiry = NULL WHERE email = $1', [email]);
 
     res.json({ message: 'Password updated successfully' });
@@ -123,5 +122,50 @@ router.post('/forgot/reset', async (req, res) => {
   }
 });
 
+router.post('/firebase-login', async (req, res) => {
+  const { uid, email, name } = req.body;
+  if (!uid || !email) return res.status(400).json({ message: 'uid and email are required' });
+
+  const displayName = name || email.split('@')[0] || 'User';
+  try {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const existing = await client.query(
+        'SELECT id, name, email, mobile, type FROM userstaras WHERE email = $1',
+        [email]
+      );
+
+      let user;
+      if (existing.rows.length > 0) {
+        user = existing.rows[0];
+      } else {
+        const inserted = await client.query(
+          'INSERT INTO userstaras (name, email, password, type, created_at) VALUES ($1, $2, $3, $4, NOW()) RETURNING id, name, email, mobile, type',
+          [displayName, email, '', 'B2C']
+        );
+        user = inserted.rows[0];
+      }
+
+      await client.query('COMMIT');
+      res.json({
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        mobile: user.mobile,
+        type: user.type || 'B2C'
+      });
+    } catch (e) {
+      await client.query('ROLLBACK');
+      console.error(e);
+      res.status(500).json({ message: 'Server error' });
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
 
 module.exports = router;
