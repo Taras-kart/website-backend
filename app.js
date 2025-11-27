@@ -57,6 +57,7 @@ app.use('/api', require('./routes/shiprocketRoutes'))
 app.use('/api', require('./routes/shipmentRoutes'))
 app.use('/api', require('./routes/returnsRoutes'))
 app.use('/api/razorpay', require('./routes/razorpayRoutes'))
+app.use('/api/homepage-images', require('./routes/homepageImageRoutes'))
 
 app.get('/', (req, res) => res.status(200).send('Taras Kart API'))
 app.get('/healthz', (req, res) => res.status(200).send('ok'))
