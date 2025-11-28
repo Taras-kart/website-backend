@@ -21,7 +21,9 @@ const HEADER_ALIASES = {
   size: ['size', 'size '],
   colour: ['colour', 'color', 'colour ', 'color '],
   pattern: ['pattern code', 'style', 'style code', 'pattern'],
-  fitt: ['fit', 'fit type', 'fitt']
+  fitt: ['fit', 'fit type', 'fitt'],
+  b2cdiscount: ['b2cdiscount', 'b2c discount', 'discount_b2c', 'b2c disc', 'b2c_disc'],
+  b2bdiscount: ['b2bdiscount', 'b2b discount', 'discount_b2b', 'b2b disc', 'b2b_disc']
 };
 
 function normalizeRow(raw) {
@@ -252,6 +254,8 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
         const RSalePrice = toNumOrNull(row.rsaleprice);
         const CostPrice = toNumOrNull(row.costprice) ?? 0;
         const PurchaseQty = toIntOrZero(row.purchaseqty);
+        const B2CDiscount = toNumOrNull(row.b2cdiscount) ?? 0;
+        const B2BDiscount = toNumOrNull(row.b2bdiscount) ?? 0;
         let EANCode = row.eancode;
         if (EANCode != null && EANCode !== '') EANCode = cleanText(EANCode);
         if (isSummaryOrBlankRow(raw, ProductName, BrandName, SIZE, COLOUR, row)) {
@@ -282,12 +286,12 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
           );
           const productId = pRes.rows[0].id;
           const vRes = await client.query(
-            `INSERT INTO product_variants (product_id, size, colour, is_active, mrp, sale_price, cost_price)
-             VALUES ($1, $2, $3, TRUE, $4, $5, $6)
+            `INSERT INTO product_variants (product_id, size, colour, is_active, mrp, sale_price, cost_price, b2c_discount_pct, b2b_discount_pct)
+             VALUES ($1, $2, $3, TRUE, $4, $5, $6, $7, $8)
              ON CONFLICT (product_id, size, colour)
-             DO UPDATE SET is_active = TRUE, mrp = EXCLUDED.mrp, sale_price = EXCLUDED.sale_price, cost_price = EXCLUDED.cost_price
+             DO UPDATE SET is_active = TRUE, mrp = EXCLUDED.mrp, sale_price = EXCLUDED.sale_price, cost_price = EXCLUDED.cost_price, b2c_discount_pct = EXCLUDED.b2c_discount_pct, b2b_discount_pct = EXCLUDED.b2b_discount_pct
              RETURNING id`,
-            [productId, SIZE, COLOUR, MRP, RSalePrice, CostPrice]
+            [productId, SIZE, COLOUR, MRP, RSalePrice, CostPrice, B2CDiscount, B2BDiscount]
           );
           const variantId = vRes.rows[0].id;
           if (EANCode) {
