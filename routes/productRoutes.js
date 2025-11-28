@@ -167,9 +167,17 @@ router.get('/', async (req, res) => {
         v.colour AS color,
         v.size AS size,
         v.mrp::numeric AS original_price_b2c,
-        v.sale_price::numeric AS final_price_b2c,
+        CASE
+          WHEN v.b2c_discount_pct IS NOT NULL AND v.b2c_discount_pct > 0
+            THEN ROUND(v.mrp::numeric * (100 - v.b2c_discount_pct)::numeric / 100, 2)
+          ELSE NULL
+        END AS final_price_b2c,
         v.mrp::numeric AS original_price_b2b,
-        COALESCE(NULLIF(v.cost_price,0), v.sale_price)::numeric AS final_price_b2b,
+        CASE
+          WHEN v.b2b_discount_pct IS NOT NULL AND v.b2b_discount_pct > 0
+            THEN ROUND(v.mrp::numeric * (100 - v.b2b_discount_pct)::numeric / 100, 2)
+          ELSE NULL
+        END AS final_price_b2b,
         v.mrp::numeric AS mrp,
         v.sale_price::numeric AS sale_price,
         COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
@@ -276,9 +284,17 @@ router.get('/category/:category', async (req, res) => {
         v.colour AS color,
         v.size AS size,
         v.mrp::numeric AS original_price_b2c,
-        v.sale_price::numeric AS final_price_b2c,
+        CASE
+          WHEN v.b2c_discount_pct IS NOT NULL AND v.b2c_discount_pct > 0
+            THEN ROUND(v.mrp::numeric * (100 - v.b2c_discount_pct)::numeric / 100, 2)
+          ELSE NULL
+        END AS final_price_b2c,
         v.mrp::numeric AS original_price_b2b,
-        COALESCE(NULLIF(v.cost_price,0), v.sale_price)::numeric AS final_price_b2b,
+        CASE
+          WHEN v.b2b_discount_pct IS NOT NULL AND v.b2b_discount_pct > 0
+            THEN ROUND(v.mrp::numeric * (100 - v.b2b_discount_pct)::numeric / 100, 2)
+          ELSE NULL
+        END AS final_price_b2b,
         v.mrp::numeric AS mrp,
         v.sale_price::numeric AS sale_price,
         COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
@@ -384,9 +400,17 @@ router.get('/gender/:gender', async (req, res) => {
         v.colour AS color,
         v.size AS size,
         v.mrp::numeric AS original_price_b2c,
-        v.sale_price::numeric AS final_price_b2c,
+        CASE
+          WHEN v.b2c_discount_pct IS NOT NULL AND v.b2c_discount_pct > 0
+            THEN ROUND(v.mrp::numeric * (100 - v.b2c_discount_pct)::numeric / 100, 2)
+          ELSE NULL
+        END AS final_price_b2c,
         v.mrp::numeric AS original_price_b2b,
-        COALESCE(NULLIF(v.cost_price,0), v.sale_price)::numeric AS final_price_b2b,
+        CASE
+          WHEN v.b2b_discount_pct IS NOT NULL AND v.b2b_discount_pct > 0
+            THEN ROUND(v.mrp::numeric * (100 - v.b2b_discount_pct)::numeric / 100, 2)
+          ELSE NULL
+        END AS final_price_b2b,
         v.mrp::numeric AS mrp,
         v.sale_price::numeric AS sale_price,
         COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
@@ -482,9 +506,17 @@ router.get('/search', async (req, res) => {
          v.colour AS color,
          v.size AS size,
          v.mrp::numeric AS original_price_b2c,
-         v.sale_price::numeric AS final_price_b2c,
+         CASE
+           WHEN v.b2c_discount_pct IS NOT NULL AND v.b2c_discount_pct > 0
+             THEN ROUND(v.mrp::numeric * (100 - v.b2c_discount_pct)::numeric / 100, 2)
+           ELSE NULL
+         END AS final_price_b2c,
          v.mrp::numeric AS original_price_b2b,
-         COALESCE(NULLIF(v.cost_price,0), v.sale_price)::numeric AS final_price_b2b,
+         CASE
+           WHEN v.b2b_discount_pct IS NOT NULL AND v.b2b_discount_pct > 0
+             THEN ROUND(v.mrp::numeric * (100 - v.b2b_discount_pct)::numeric / 100, 2)
+           ELSE NULL
+         END AS final_price_b2b,
          v.mrp::numeric AS mrp,
          v.sale_price::numeric AS sale_price,
          COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
@@ -604,9 +636,17 @@ router.get('/:id(\\d+)', async (req, res) => {
          v.colour AS color,
          v.size AS size,
          v.mrp::numeric AS original_price_b2c,
-         v.sale_price::numeric AS final_price_b2c,
+         CASE
+           WHEN v.b2c_discount_pct IS NOT NULL AND v.b2c_discount_pct > 0
+             THEN ROUND(v.mrp::numeric * (100 - v.b2c_discount_pct)::numeric / 100, 2)
+           ELSE NULL
+         END AS final_price_b2c,
          v.mrp::numeric AS original_price_b2b,
-         COALESCE(NULLIF(v.cost_price,0), v.sale_price)::numeric AS final_price_b2b,
+         CASE
+           WHEN v.b2b_discount_pct IS NOT NULL AND v.b2b_discount_pct > 0
+             THEN ROUND(v.mrp::numeric * (100 - v.b2b_discount_pct)::numeric / 100, 2)
+           ELSE NULL
+         END AS final_price_b2b,
          v.mrp::numeric AS mrp,
          v.sale_price::numeric AS sale_price,
          COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
