@@ -471,4 +471,67 @@ router.get('/:branchId/stock', requireBranchAuth, async (req, res) => {
   }
 });
 
+router.get('/:branchId/discounts', requireBranchAuth, async (req, res) => {
+  const branchId = parseInt(req.params.branchId, 10);
+  if (!branchId || branchId !== Number(req.user.branch_id)) return res.status(403).json({ message: 'Forbidden' });
+  try {
+    const { rows } = await pool.query(
+      `SELECT
+         COALESCE(
+           (
+             SELECT v.b2c_discount_pct
+             FROM product_variants v
+             JOIN branch_variant_stock bvs ON bvs.variant_id = v.id
+             WHERE bvs.branch_id = $1
+               AND v.b2c_discount_pct IS NOT NULL
+             LIMIT 1
+           ),
+           0
+         ) AS b2c_discount_pct,
+         COALESCE(
+           (
+             SELECT v.b2b_discount_pct
+             FROM product_variants v
+             JOIN branch_variant_stock bvs ON bvs.variant_id = v.id
+             WHERE bvs.branch_id = $1
+               AND v.b2b_discount_pct IS NOT NULL
+             LIMIT 1
+           ),
+           0
+         ) AS b2b_discount_pct`,
+      [branchId]
+    );
+    if (!rows.length) {
+      return res.json({ b2c_discount_pct: 0, b2b_discount_pct: 0 });
+    }
+    res.json(rows[0]);
+  } catch {
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+router.post('/:branchId/discounts', requireBranchAuth, async (req, res) => {
+  const branchId = parseInt(req.params.branchId, 10);
+  if (!branchId || branchId !== Number(req.user.branch_id)) return res.status(403).json({ message: 'Forbidden' });
+  const b2c = Number(req.body?.b2c_discount_pct);
+  const b2b = Number(req.body?.b2b_discount_pct);
+  if (!Number.isFinite(b2c) || !Number.isFinite(b2b) || b2c < 0 || b2b < 0) {
+    return res.status(400).json({ message: 'Invalid discount values' });
+  }
+  try {
+    await pool.query(
+      `UPDATE product_variants v
+         SET b2c_discount_pct = $2,
+             b2b_discount_pct = $3
+       FROM branch_variant_stock bvs
+       WHERE bvs.variant_id = v.id
+         AND bvs.branch_id = $1`,
+      [branchId, b2c, b2b]
+    );
+    res.json({ b2c_discount_pct: b2c, b2b_discount_pct: b2b });
+  } catch {
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 module.exports = router;
