@@ -2,6 +2,11 @@ const express = require('express');
 const pool = require('../db');
 const router = express.Router();
 
+const WEB_BRANCH_ID = (() => {
+  const v = parseInt(process.env.WEB_BRANCH_ID || '', 10);
+  return Number.isFinite(v) && v > 0 ? v : null;
+})();
+
 router.post('/', async (req, res) => {
   const { user_id, product_id } = req.body;
   if (!user_id || !product_id) {
@@ -30,6 +35,13 @@ router.get('/:user_id', async (req, res) => {
   const userId = req.params.user_id;
   try {
     const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh';
+    let branchId = WEB_BRANCH_ID;
+    const branchFromQuery = req.query.branch_id || req.query.branchId;
+    if (branchFromQuery) {
+      const parsed = parseInt(branchFromQuery, 10);
+      if (Number.isFinite(parsed) && parsed > 0) branchId = parsed;
+    }
+
     const { rows } = await pool.query(
       `
       WITH pv AS (
@@ -75,10 +87,18 @@ router.get('/:user_id', async (req, res) => {
         pv.product_name,
         pv.brand,
         pv.gender,
-        pv.mrp           AS original_price_b2c,
-        pv.sale_price    AS final_price_b2c,
-        pv.mrp           AS original_price_b2b,
-        COALESCE(NULLIF(pv.cost_price,0), pv.sale_price) AS final_price_b2b,
+        pv.mrp AS original_price_b2c,
+        CASE
+          WHEN COALESCE(bd.b2c_discount_pct, 0) > 0
+            THEN ROUND(pv.mrp * (100 - bd.b2c_discount_pct)::numeric / 100, 2)
+          ELSE pv.mrp
+        END AS final_price_b2c,
+        pv.mrp AS original_price_b2b,
+        CASE
+          WHEN COALESCE(bd.b2b_discount_pct, 0) > 0
+            THEN ROUND(pv.mrp * (100 - bd.b2b_discount_pct)::numeric / 100, 2)
+          ELSE pv.mrp
+        END AS final_price_b2b,
         COALESCE(
           NULLIF(pv.v_image,''),
           NULLIF(pv.pi_image,''),
@@ -89,10 +109,12 @@ router.get('/:user_id', async (req, res) => {
         ) AS image_url
       FROM taraswishlist w
       JOIN pv ON pv.product_id = w.product_id
-      WHERE w.user_id = $2
+      LEFT JOIN branch_discounts bd
+        ON bd.branch_id = $2::int
+      WHERE w.user_id = $3
       ORDER BY pv.product_id DESC
       `,
-      [cloud, userId]
+      [cloud, branchId, userId]
     );
     res.json(rows);
   } catch (err) {

@@ -2,6 +2,11 @@ const express = require('express');
 const pool = require('../db');
 const router = express.Router();
 
+const WEB_BRANCH_ID = (() => {
+  const v = parseInt(process.env.WEB_BRANCH_ID || '', 10);
+  return Number.isFinite(v) && v > 0 ? v : null;
+})();
+
 router.post('/tarascart', async (req, res) => {
   const { user_id, product_id, selected_size, selected_color } = req.body;
   if (!user_id || !product_id || !selected_size || !selected_color) {
@@ -30,6 +35,14 @@ router.post('/tarascart', async (req, res) => {
 router.get('/:userId', async (req, res) => {
   const { userId } = req.params;
   try {
+    const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh';
+    let branchId = WEB_BRANCH_ID;
+    const branchFromQuery = req.query.branch_id || req.query.branchId;
+    if (branchFromQuery) {
+      const parsed = parseInt(branchFromQuery, 10);
+      if (Number.isFinite(parsed) && parsed > 0) branchId = parsed;
+    }
+
     const { rows } = await pool.query(
       `
       WITH base AS (
@@ -44,12 +57,9 @@ router.get('/:userId', async (req, res) => {
           p.gender,
           v.size,
           v.colour                AS color,
-          v.mrp::numeric          AS original_price_b2c,
-          CASE
-            WHEN v.sale_price IS NOT NULL AND v.sale_price::numeric > 0
-              THEN v.sale_price::numeric
-            ELSE v.mrp::numeric
-          END                    AS final_price_b2c,
+          v.mrp::numeric          AS mrp,
+          v.sale_price::numeric   AS sale_price,
+          COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
           COALESCE(bc_self.ean_code, bc_any.ean_code, '') AS ean_code,
           v.image_url             AS v_image,
           pi.image_url            AS pi_image
@@ -72,31 +82,43 @@ router.get('/:userId', async (req, res) => {
         WHERE c.user_id = $1
       )
       SELECT
-        user_id,
-        variant_id AS id,
-        product_id,
-        product_name,
-        brand,
-        gender,
-        color,
-        size,
-        selected_size,
-        selected_color,
-        original_price_b2c,
-        final_price_b2c,
+        b.user_id,
+        b.variant_id AS id,
+        b.product_id,
+        b.product_name,
+        b.brand,
+        b.gender,
+        b.color,
+        b.size,
+        b.selected_size,
+        b.selected_color,
+        b.mrp AS original_price_b2c,
+        CASE
+          WHEN COALESCE(bd.b2c_discount_pct, 0) > 0
+            THEN ROUND(b.mrp * (100 - bd.b2c_discount_pct)::numeric / 100, 2)
+          ELSE COALESCE(NULLIF(b.sale_price,0), b.mrp)
+        END AS final_price_b2c,
+        b.mrp AS original_price_b2b,
+        CASE
+          WHEN COALESCE(bd.b2b_discount_pct, 0) > 0
+            THEN ROUND(b.mrp * (100 - bd.b2b_discount_pct)::numeric / 100, 2)
+          ELSE COALESCE(NULLIF(b.cost_price,0), COALESCE(NULLIF(b.sale_price,0), b.mrp))
+        END AS final_price_b2b,
         COALESCE(
-          NULLIF(v_image,''),
-          NULLIF(pi_image,''),
+          NULLIF(b.v_image,''),
+          NULLIF(b.pi_image,''),
           CASE
-            WHEN ean_code <> '' THEN CONCAT('https://res.cloudinary.com/', $2::text, '/image/upload/f_auto,q_auto/products/', ean_code)
+            WHEN b.ean_code <> '' THEN CONCAT('https://res.cloudinary.com/', $2::text, '/image/upload/f_auto,q_auto/products/', b.ean_code)
             ELSE NULL
           END
         ) AS image_url,
-        ean_code
-      FROM base
-      ORDER BY variant_id DESC
+        b.ean_code
+      FROM base b
+      LEFT JOIN branch_discounts bd
+        ON bd.branch_id = $3::int
+      ORDER BY b.variant_id DESC
       `,
-      [userId, process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh']
+      [userId, cloud, branchId]
     );
     res.json(rows);
   } catch (err) {
