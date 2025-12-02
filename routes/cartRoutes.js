@@ -59,6 +59,8 @@ router.get('/:userId', async (req, res) => {
           v.mrp::numeric          AS mrp,
           v.sale_price::numeric   AS sale_price,
           COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
+          COALESCE(v.b2c_discount_pct, 0)::numeric AS b2c_discount_pct,
+          COALESCE(v.b2b_discount_pct, 0)::numeric AS b2b_discount_pct,
           COALESCE(bc_self.ean_code, bc_any.ean_code, '') AS ean_code,
           v.image_url             AS v_image,
           pi.image_url            AS pi_image
@@ -93,14 +95,14 @@ router.get('/:userId', async (req, res) => {
         b.selected_color,
         b.mrp AS original_price_b2c,
         CASE
-          WHEN COALESCE(bd.b2c_discount_pct, 0) > 0
-            THEN ROUND(b.mrp * (100 - bd.b2c_discount_pct)::numeric / 100, 2)
+          WHEN b.b2c_discount_pct > 0
+            THEN ROUND(b.mrp * (100 - b.b2c_discount_pct)::numeric / 100, 2)
           ELSE COALESCE(NULLIF(b.sale_price,0), b.mrp)
         END AS final_price_b2c,
         b.mrp AS original_price_b2b,
         CASE
-          WHEN COALESCE(bd.b2b_discount_pct, 0) > 0
-            THEN ROUND(b.mrp * (100 - bd.b2b_discount_pct)::numeric / 100, 2)
+          WHEN b.b2b_discount_pct > 0
+            THEN ROUND(b.mrp * (100 - b.b2b_discount_pct)::numeric / 100, 2)
           ELSE COALESCE(NULLIF(b.cost_price,0), COALESCE(NULLIF(b.sale_price,0), b.mrp))
         END AS final_price_b2b,
         COALESCE(
@@ -113,8 +115,6 @@ router.get('/:userId', async (req, res) => {
         ) AS image_url,
         b.ean_code
       FROM base b
-      LEFT JOIN branch_discounts bd
-        ON bd.branch_id = $3::int
       ORDER BY b.variant_id DESC
     `;
 
@@ -134,6 +134,8 @@ router.get('/:userId', async (req, res) => {
           v.mrp::numeric          AS mrp,
           v.sale_price::numeric   AS sale_price,
           COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
+          COALESCE(v.b2c_discount_pct, 0)::numeric AS b2c_discount_pct,
+          COALESCE(v.b2b_discount_pct, 0)::numeric AS b2b_discount_pct,
           COALESCE(bc_self.ean_code, bc_any.ean_code, '') AS ean_code,
           v.image_url             AS v_image,
           pi.image_url            AS pi_image
@@ -167,9 +169,17 @@ router.get('/:userId', async (req, res) => {
         selected_size,
         selected_color,
         mrp AS original_price_b2c,
-        COALESCE(NULLIF(sale_price,0), mrp) AS final_price_b2c,
+        CASE
+          WHEN b2c_discount_pct > 0
+            THEN ROUND(mrp * (100 - b2c_discount_pct)::numeric / 100, 2)
+          ELSE COALESCE(NULLIF(sale_price,0), mrp)
+        END AS final_price_b2c,
         mrp AS original_price_b2b,
-        COALESCE(NULLIF(cost_price,0), COALESCE(NULLIF(sale_price,0), mrp)) AS final_price_b2b,
+        CASE
+          WHEN b2b_discount_pct > 0
+            THEN ROUND(mrp * (100 - b2b_discount_pct)::numeric / 100, 2)
+          ELSE COALESCE(NULLIF(cost_price,0), COALESCE(NULLIF(sale_price,0), mrp))
+        END AS final_price_b2b,
         COALESCE(
           NULLIF(v_image,''),
           NULLIF(pi_image,''),
