@@ -36,89 +36,8 @@ router.get('/:userId', async (req, res) => {
   const { userId } = req.params;
   try {
     const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh';
-    let branchId = WEB_BRANCH_ID;
-    const branchFromQuery = req.query.branch_id || req.query.branchId;
-    if (branchFromQuery) {
-      const parsed = parseInt(branchFromQuery, 10);
-      if (Number.isFinite(parsed) && parsed > 0) branchId = parsed;
-    }
 
-    const sqlWithBranch = `
-      WITH base AS (
-        SELECT
-          c.user_id,
-          c.product_id            AS variant_id,
-          c.selected_size,
-          c.selected_color,
-          v.product_id            AS product_id,
-          p.name                  AS product_name,
-          p.brand_name            AS brand,
-          p.gender,
-          v.size,
-          v.colour                AS color,
-          v.mrp::numeric          AS mrp,
-          v.sale_price::numeric   AS sale_price,
-          COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
-          COALESCE(v.b2c_discount_pct, 0)::numeric AS b2c_discount_pct,
-          COALESCE(v.b2b_discount_pct, 0)::numeric AS b2b_discount_pct,
-          COALESCE(bc_self.ean_code, bc_any.ean_code, '') AS ean_code,
-          v.image_url             AS v_image,
-          pi.image_url            AS pi_image
-        FROM tarascart c
-        JOIN product_variants v ON v.id = c.product_id
-        JOIN products p ON p.id = v.product_id
-        LEFT JOIN LATERAL (
-          SELECT ean_code FROM barcodes b WHERE b.variant_id = v.id ORDER BY id ASC LIMIT 1
-        ) bc_self ON TRUE
-        LEFT JOIN LATERAL (
-          SELECT b2.ean_code
-          FROM product_variants v2
-          JOIN products p2 ON p2.id = v2.product_id
-          JOIN barcodes b2 ON b2.variant_id = v2.id
-          WHERE p2.name = p.name AND p2.brand_name = p.brand_name AND v2.size = v.size AND v2.colour = v.colour
-          ORDER BY b2.id ASC
-          LIMIT 1
-        ) bc_any ON TRUE
-        LEFT JOIN product_images pi ON pi.ean_code = COALESCE(bc_self.ean_code, bc_any.ean_code)
-        WHERE c.user_id = $1
-      )
-      SELECT
-        b.user_id,
-        b.variant_id AS id,
-        b.product_id,
-        b.product_name,
-        b.brand,
-        b.gender,
-        b.color,
-        b.size,
-        b.selected_size,
-        b.selected_color,
-        b.mrp AS original_price_b2c,
-        CASE
-          WHEN b.b2c_discount_pct > 0
-            THEN ROUND(b.mrp * (100 - b.b2c_discount_pct)::numeric / 100, 2)
-          ELSE COALESCE(NULLIF(b.sale_price,0), b.mrp)
-        END AS final_price_b2c,
-        b.mrp AS original_price_b2b,
-        CASE
-          WHEN b.b2b_discount_pct > 0
-            THEN ROUND(b.mrp * (100 - b.b2b_discount_pct)::numeric / 100, 2)
-          ELSE COALESCE(NULLIF(b.cost_price,0), COALESCE(NULLIF(b.sale_price,0), b.mrp))
-        END AS final_price_b2b,
-        COALESCE(
-          NULLIF(b.v_image,''),
-          NULLIF(b.pi_image,''),
-          CASE
-            WHEN b.ean_code <> '' THEN CONCAT('https://res.cloudinary.com/', $2::text, '/image/upload/f_auto,q_auto/products/', b.ean_code)
-            ELSE NULL
-          END
-        ) AS image_url,
-        b.ean_code
-      FROM base b
-      ORDER BY b.variant_id DESC
-    `;
-
-    const sqlNoBranch = `
+    const sql = `
       WITH base AS (
         SELECT
           c.user_id,
@@ -193,20 +112,8 @@ router.get('/:userId', async (req, res) => {
       ORDER BY variant_id DESC
     `;
 
-    try {
-      const { rows } = await pool.query(sqlWithBranch, [userId, cloud, branchId]);
-      return res.json(rows);
-    } catch (err) {
-      if (err.code !== '42P01') {
-        return res.status(500).json({ message: 'Error fetching cart', error: err.message });
-      }
-      try {
-        const { rows } = await pool.query(sqlNoBranch, [userId, cloud]);
-        return res.json(rows);
-      } catch (err2) {
-        return res.status(500).json({ message: 'Error fetching cart', error: err2.message });
-      }
-    }
+    const { rows } = await pool.query(sql, [userId, cloud]);
+    return res.json(rows);
   } catch (err) {
     res.status(500).json({ message: 'Error fetching cart', error: err.message });
   }
