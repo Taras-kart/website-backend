@@ -37,7 +37,6 @@ router.post('/login', async (req, res) => {
 });
 
 router.get('/me', requireAuth, async (req, res) => {
-  
   try {
     const { rows } = await pool.query(
       'SELECT id, username, role_enum, branch_id, last_login FROM users WHERE id = $1',
@@ -68,6 +67,148 @@ router.post('/change-password', requireAuth, async (req, res) => {
     await pool.query('UPDATE users SET hashed_pw = $1 WHERE id = $2', [hashed, req.user.id]);
     res.json({ message: 'Password updated' });
   } catch {
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+function requireSuperAdmin(req, res, next) {
+  if (!req.user || req.user.role_enum !== 'SUPER_ADMIN') {
+    return res.status(403).json({ message: 'Forbidden' });
+  }
+  next();
+}
+
+function mapUserToBranchAdmin(row) {
+  return {
+    id: row.id,
+    email: row.username,
+    name: row.name || null,
+    branch_name: row.branch_name || null,
+    branch_code: row.branch_code || null,
+    last_login: row.last_login || null,
+    is_active: row.is_active !== false
+  };
+}
+
+router.get('/branch-admins', requireAuth, requireSuperAdmin, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      "SELECT id, username, role_enum, branch_id, last_login, is_active, name, branch_name, branch_code FROM users WHERE role_enum = 'BRANCH_ADMIN' ORDER BY id DESC"
+    );
+    res.json(rows.map(mapUserToBranchAdmin));
+  } catch (e) {
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+router.post('/branch-admins', requireAuth, requireSuperAdmin, async (req, res) => {
+  const { email, password, name, branch_name, branch_code } = req.body || {};
+  if (!email || !password) return res.status(400).json({ message: 'email and password required' });
+  try {
+    const existing = await pool.query(
+      'SELECT id FROM users WHERE username = $1 LIMIT 1',
+      [email]
+    );
+    if (existing.rows.length) {
+      return res.status(409).json({ message: 'Admin with this email already exists' });
+    }
+    const hashed = await bcrypt.hash(password, 10);
+    const insertQuery = `
+      INSERT INTO users (username, hashed_pw, role_enum, is_active, name, branch_name, branch_code)
+      VALUES ($1, $2, 'BRANCH_ADMIN', true, $3, $4, $5)
+      RETURNING id, username, role_enum, branch_id, last_login, is_active, name, branch_name, branch_code
+    `;
+    const { rows } = await pool.query(insertQuery, [
+      email,
+      hashed,
+      name || null,
+      branch_name || null,
+      branch_code || null
+    ]);
+    res.status(201).json(mapUserToBranchAdmin(rows[0]));
+  } catch (e) {
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+router.put('/branch-admins/:id', requireAuth, requireSuperAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { email, password, name, branch_name, branch_code, is_active } = req.body || {};
+  if (!email) return res.status(400).json({ message: 'email is required' });
+  try {
+    const { rows: existingRows } = await pool.query(
+      'SELECT * FROM users WHERE id = $1 AND role_enum = $2',
+      [id, 'BRANCH_ADMIN']
+    );
+    if (!existingRows.length) return res.status(404).json({ message: 'Branch admin not found' });
+
+    const usernameTaken = await pool.query(
+      'SELECT id FROM users WHERE username = $1 AND id <> $2 LIMIT 1',
+      [email, id]
+    );
+    if (usernameTaken.rows.length) {
+      return res.status(409).json({ message: 'Another admin with this email already exists' });
+    }
+
+    let hashed = null;
+    if (password && String(password).trim() !== '') {
+      hashed = await bcrypt.hash(password, 10);
+    }
+
+    const updateParts = [];
+    const params = [];
+    let idx = 1;
+
+    updateParts.push(`username = $${idx++}`);
+    params.push(email);
+    updateParts.push(`name = $${idx++}`);
+    params.push(name || null);
+    updateParts.push(`branch_name = $${idx++}`);
+    params.push(branch_name || null);
+    updateParts.push(`branch_code = $${idx++}`);
+    params.push(branch_code || null);
+
+    if (typeof is_active === 'boolean') {
+      updateParts.push(`is_active = $${idx++}`);
+      params.push(is_active);
+    }
+
+    if (hashed) {
+      updateParts.push(`hashed_pw = $${idx++}`);
+      params.push(hashed);
+    }
+
+    params.push(id);
+
+    const updateQuery = `
+      UPDATE users
+      SET ${updateParts.join(', ')}
+      WHERE id = $${idx} AND role_enum = 'BRANCH_ADMIN'
+      RETURNING id, username, role_enum, branch_id, last_login, is_active, name, branch_name, branch_code
+    `;
+    const { rows } = await pool.query(updateQuery, params);
+    if (!rows.length) return res.status(404).json({ message: 'Branch admin not found' });
+    res.json(mapUserToBranchAdmin(rows[0]));
+  } catch (e) {
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+router.delete('/branch-admins/:id', requireAuth, requireSuperAdmin, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const { rows } = await pool.query(
+      `
+      UPDATE users
+      SET is_active = false
+      WHERE id = $1 AND role_enum = 'BRANCH_ADMIN'
+      RETURNING id, username, role_enum, branch_id, last_login, is_active, name, branch_name, branch_code
+      `,
+      [id]
+    );
+    if (!rows.length) return res.status(404).json({ message: 'Branch admin not found' });
+    res.json(mapUserToBranchAdmin(rows[0]));
+  } catch (e) {
     res.status(500).json({ message: 'Server error' });
   }
 });
