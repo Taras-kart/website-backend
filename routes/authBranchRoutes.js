@@ -93,7 +93,7 @@ function mapUserToBranchAdmin(row) {
 router.get('/branch-admins', requireAuth, requireSuperAdmin, async (req, res) => {
   try {
     const { rows } = await pool.query(
-      "SELECT id, username, role_enum, branch_id, last_login, is_active, name, branch_name, branch_code FROM users WHERE role_enum = 'BRANCH_ADMIN' ORDER BY id DESC"
+      "SELECT id, username, role_enum, branch_id, last_login, is_active, name, branch_name, branch_code FROM users WHERE role_enum LIKE 'BRANCH%' OR role_enum = 'BRANCH_ADMIN' ORDER BY id DESC"
     );
     res.json(rows.map(mapUserToBranchAdmin));
   } catch (e) {
@@ -137,8 +137,8 @@ router.put('/branch-admins/:id', requireAuth, requireSuperAdmin, async (req, res
   if (!email) return res.status(400).json({ message: 'email is required' });
   try {
     const { rows: existingRows } = await pool.query(
-      'SELECT * FROM users WHERE id = $1 AND role_enum = $2',
-      [id, 'BRANCH_ADMIN']
+      'SELECT * FROM users WHERE id = $1 AND (role_enum LIKE $2 OR role_enum = $3)',
+      [id, 'BRANCH%', 'BRANCH_ADMIN']
     );
     if (!existingRows.length) return res.status(404).json({ message: 'Branch admin not found' });
 
@@ -183,7 +183,7 @@ router.put('/branch-admins/:id', requireAuth, requireSuperAdmin, async (req, res
     const updateQuery = `
       UPDATE users
       SET ${updateParts.join(', ')}
-      WHERE id = $${idx} AND role_enum = 'BRANCH_ADMIN'
+      WHERE id = $${idx} AND (role_enum LIKE 'BRANCH%' OR role_enum = 'BRANCH_ADMIN')
       RETURNING id, username, role_enum, branch_id, last_login, is_active, name, branch_name, branch_code
     `;
     const { rows } = await pool.query(updateQuery, params);
@@ -201,7 +201,7 @@ router.delete('/branch-admins/:id', requireAuth, requireSuperAdmin, async (req, 
       `
       UPDATE users
       SET is_active = false
-      WHERE id = $1 AND role_enum = 'BRANCH_ADMIN'
+      WHERE id = $1 AND (role_enum LIKE 'BRANCH%' OR role_enum = 'BRANCH_ADMIN')
       RETURNING id, username, role_enum, branch_id, last_login, is_active, name, branch_name, branch_code
       `,
       [id]
