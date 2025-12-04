@@ -33,14 +33,19 @@ class Shiprocket {
     await this.ensureToken();
   }
 
-  async api(method, path, data) {
+  async api(method, path, payload) {
     await this.ensureToken();
-    return axios({
+    const config = {
       method,
       url: `${BASE}${path}`,
-      data,
       headers: { Authorization: `Bearer ${this.token}` }
-    });
+    };
+    if (method.toLowerCase() === 'get') {
+      if (payload) config.params = payload;
+    } else {
+      if (payload) config.data = payload;
+    }
+    return axios(config);
   }
 
   async upsertWarehouseFromBranch(branch) {
@@ -135,6 +140,17 @@ class Shiprocket {
     const { data } = await this.api('post', '/manifests/generate', {
       shipment_id: ids
     });
+    return data;
+  }
+
+  async checkServiceability({ pickup_postcode, delivery_postcode, cod = false, weight = 0.5 }) {
+    const params = {
+      pickup_postcode: String(pickup_postcode),
+      delivery_postcode: String(delivery_postcode),
+      cod: cod ? 1 : 0,
+      weight: Number(weight || 0.5)
+    };
+    const { data } = await this.api('get', '/courier/serviceability', params);
     return data;
   }
 }
