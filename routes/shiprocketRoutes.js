@@ -125,4 +125,47 @@ router.post('/shiprocket/webhook', async (req, res) => {
   }
 });
 
+router.get('/shiprocket/pincode', async (req, res) => {
+  try {
+    const deliveryPin = String(req.query.pincode || '').trim();
+    if (!deliveryPin || deliveryPin.length !== 6) {
+      return res.status(400).json({ ok: false, message: 'Invalid pincode' });
+    }
+
+    const { rows } = await pool.query(
+      'SELECT pincode FROM branches WHERE is_active = true AND pincode IS NOT NULL LIMIT 1'
+    );
+    const pickupPin = String(rows[0]?.pincode || '').trim();
+    if (!pickupPin) {
+      return res.status(500).json({ ok: false, message: 'No pickup pincode configured' });
+    }
+
+    const sr = new Shiprocket({ pool });
+    await sr.init();
+
+    const data = await sr.checkServiceability({
+      pickup_postcode: pickupPin,
+      delivery_postcode: deliveryPin,
+      cod: true,
+      weight: 0.5
+    });
+
+    const list = Array.isArray(data?.data?.available_courier_companies)
+      ? data.data.available_courier_companies
+      : [];
+
+    const serviceable = list.length > 0;
+
+    return res.json({
+      ok: true,
+      serviceable,
+      est_delivery: list[0]?.etd || null,
+      cod_available: list.some((c) => Number(c.cod) === 1)
+    });
+  } catch (e) {
+    const msg = e.response?.data || e.message || 'Failed to check pincode';
+    return res.status(500).json({ ok: false, message: msg });
+  }
+});
+
 module.exports = router;
