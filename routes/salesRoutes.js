@@ -122,7 +122,6 @@ router.post('/web/place', async (req, res) => {
 
   if (
     saleId &&
-    finalPaymentStatus === 'COD' &&
     responseTotals &&
     Number(responseTotals.payable || 0) > 0
   ) {
@@ -141,7 +140,7 @@ router.post('/web/place', async (req, res) => {
       await fulfillOrderWithShiprocket(saleForShiprocket, pool);
     } catch (err) {
       console.error(
-        'Auto Shiprocket fulfill (COD) error',
+        'Auto Shiprocket fulfill (WEB) error',
         err?.response?.data || err?.message || err
       );
     }
@@ -156,7 +155,6 @@ router.post('/web/place', async (req, res) => {
 
 router.post('/web/set-payment-status', async (req, res) => {
   const client = await pool.connect();
-  let saleForShiprocket = null;
   let newStatus = null;
 
   try {
@@ -222,8 +220,6 @@ router.post('/web/set-payment-status', async (req, res) => {
       }
     }
 
-    let itemsForShiprocket = [];
-
     if (status === 'PAID') {
       const itemsQ = await client.query(
         'SELECT variant_id, qty, price, mrp, size, colour, image_url, ean_code FROM sale_items WHERE sale_id = $1::uuid',
@@ -267,32 +263,6 @@ router.post('/web/set-payment-status', async (req, res) => {
           );
         }
       }
-
-      itemsForShiprocket = itemsRows.map((row) => ({
-        variant_id: row.variant_id,
-        qty: Number(row.qty || 0),
-        price: Number(row.price || 0),
-        mrp: row.mrp != null ? Number(row.mrp) : null,
-        size: row.size,
-        colour: row.colour,
-        image_url: row.image_url || null,
-        ean_code: row.ean_code || null
-      }));
-
-      saleForShiprocket = {
-        id: saleId,
-        customer_name: saleRow.customer_name || null,
-        customer_email: saleRow.customer_email || null,
-        customer_mobile: saleRow.customer_mobile || null,
-        shipping_address: shippingAddress,
-        totals,
-        payment_status: 'PAID',
-        pincode:
-          shippingAddress?.pincode ||
-          saleRow.pincode ||
-          null,
-        items: itemsForShiprocket
-      };
     }
 
     const q = await client.query(
@@ -304,17 +274,6 @@ router.post('/web/set-payment-status', async (req, res) => {
     client.release();
 
     newStatus = q.rows[0].payment_status;
-
-    if (saleForShiprocket && newStatus === 'PAID') {
-      try {
-        await fulfillOrderWithShiprocket(saleForShiprocket, pool);
-      } catch (err) {
-        console.error(
-          'Auto Shiprocket fulfill (ONLINE) error',
-          err?.response?.data || err?.message || err
-        );
-      }
-    }
 
     return res.json({ id: q.rows[0].id, payment_status: newStatus });
   } catch (e) {
