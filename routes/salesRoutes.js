@@ -41,10 +41,13 @@ router.post('/web/place', async (req, res) => {
     }
 
     const couponPct = Number(totals?.couponPct ?? 0);
-    const couponDiscount = Math.floor(((bagTotal - discountTotal) * couponPct) / 100);
+    const couponDiscount = Math.floor(
+      ((bagTotal - discountTotal) * couponPct) / 100
+    );
     const convenience = Number(totals?.convenience ?? 0);
     const giftWrap = Number(totals?.giftWrap ?? 0);
-    const payable = bagTotal - discountTotal - couponDiscount + convenience + giftWrap;
+    const payable =
+      bagTotal - discountTotal - couponDiscount + convenience + giftWrap;
 
     saleTotals = {
       bagTotal,
@@ -56,7 +59,9 @@ router.post('/web/place', async (req, res) => {
       payable
     };
 
-    const baseTotals = totals ? JSON.stringify(totals) : JSON.stringify(saleTotals);
+    const baseTotals = totals
+      ? JSON.stringify(totals)
+      : JSON.stringify(saleTotals);
 
     const storedEmail = login_email || customer_email || null;
 
@@ -152,7 +157,7 @@ router.post('/web/place', async (req, res) => {
 router.post('/web/set-payment-status', async (req, res) => {
   const client = await pool.connect();
   let saleForShiprocket = null;
-  let shouldAutoFulfill = false;
+  let newStatus = null;
 
   try {
     const requestedSaleId = String(req.body.sale_id || '').trim();
@@ -169,7 +174,17 @@ router.post('/web/set-payment-status', async (req, res) => {
     await client.query('BEGIN');
 
     const saleQ = await client.query(
-      'SELECT id, payment_status, branch_id, customer_name, customer_email, customer_mobile, shipping_address, totals FROM sales WHERE id = $1::uuid FOR UPDATE',
+      `SELECT id,
+              payment_status,
+              branch_id,
+              customer_name,
+              customer_email,
+              customer_mobile,
+              shipping_address,
+              totals
+       FROM sales
+       WHERE id = $1::uuid
+       FOR UPDATE`,
       [requestedSaleId]
     );
     if (!saleQ.rowCount) {
@@ -189,12 +204,31 @@ router.post('/web/set-payment-status', async (req, res) => {
       return res.json({ id: saleRow.id, payment_status: currentStatus });
     }
 
-    if (status === 'PAID' && currentStatus !== 'PAID') {
+    let shippingAddress = saleRow.shipping_address;
+    if (typeof shippingAddress === 'string') {
+      try {
+        shippingAddress = JSON.parse(shippingAddress);
+      } catch {
+        shippingAddress = null;
+      }
+    }
+
+    let totals = saleRow.totals;
+    if (typeof totals === 'string') {
+      try {
+        totals = JSON.parse(totals);
+      } catch {
+        totals = null;
+      }
+    }
+
+    let itemsForShiprocket = [];
+
+    if (status === 'PAID') {
       const itemsQ = await client.query(
         'SELECT variant_id, qty, price, mrp, size, colour, image_url, ean_code FROM sale_items WHERE sale_id = $1::uuid',
         [saleId]
       );
-
       const itemsRows = itemsQ.rows || [];
 
       if (branchId && itemsRows.length) {
@@ -234,7 +268,7 @@ router.post('/web/set-payment-status', async (req, res) => {
         }
       }
 
-      const itemsForShiprocket = itemsRows.map((row) => ({
+      itemsForShiprocket = itemsRows.map((row) => ({
         variant_id: row.variant_id,
         qty: Number(row.qty || 0),
         price: Number(row.price || 0),
@@ -245,37 +279,20 @@ router.post('/web/set-payment-status', async (req, res) => {
         ean_code: row.ean_code || null
       }));
 
-      let totals = saleRow.totals;
-      if (typeof totals === 'string') {
-        try {
-          totals = JSON.parse(totals);
-        } catch {
-          totals = null;
-        }
-      }
-
       saleForShiprocket = {
         id: saleId,
         customer_name: saleRow.customer_name || null,
         customer_email: saleRow.customer_email || null,
         customer_mobile: saleRow.customer_mobile || null,
-        shipping_address: saleRow.shipping_address || null,
+        shipping_address: shippingAddress,
         totals,
         payment_status: 'PAID',
         pincode:
-          saleRow.shipping_address?.pincode ||
+          shippingAddress?.pincode ||
           saleRow.pincode ||
           null,
         items: itemsForShiprocket
       };
-
-      if (
-        itemsForShiprocket.length &&
-        totals &&
-        Number(totals.payable || 0) > 0
-      ) {
-        shouldAutoFulfill = true;
-      }
     }
 
     const q = await client.query(
@@ -286,7 +303,9 @@ router.post('/web/set-payment-status', async (req, res) => {
     await client.query('COMMIT');
     client.release();
 
-    if (shouldAutoFulfill && saleForShiprocket) {
+    newStatus = q.rows[0].payment_status;
+
+    if (saleForShiprocket && newStatus === 'PAID') {
       try {
         await fulfillOrderWithShiprocket(saleForShiprocket, pool);
       } catch (err) {
@@ -297,8 +316,8 @@ router.post('/web/set-payment-status', async (req, res) => {
       }
     }
 
-    return res.json({ id: q.rows[0].id, payment_status: q.rows[0].payment_status });
-  } catch {
+    return res.json({ id: q.rows[0].id, payment_status: newStatus });
+  } catch (e) {
     try {
       await client.query('ROLLBACK');
     } catch {}
@@ -515,9 +534,8 @@ router.post('/confirm', requireAuth, async (req, res) => {
     }
 
     let total = 0;
-    for (const it of items) {
+    for (const it of items)
       total += Number(it?.qty ?? 0) * Number(it?.price ?? 0);
-    }
 
     const s0 = await client.query(
       'SELECT id FROM sales WHERE id = $1::uuid',
