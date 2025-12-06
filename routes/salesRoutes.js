@@ -41,13 +41,10 @@ router.post('/web/place', async (req, res) => {
     }
 
     const couponPct = Number(totals?.couponPct ?? 0);
-    const couponDiscount = Math.floor(
-      ((bagTotal - discountTotal) * couponPct) / 100
-    );
+    const couponDiscount = Math.floor(((bagTotal - discountTotal) * couponPct) / 100);
     const convenience = Number(totals?.convenience ?? 0);
     const giftWrap = Number(totals?.giftWrap ?? 0);
-    const payable =
-      bagTotal - discountTotal - couponDiscount + convenience + giftWrap;
+    const payable = bagTotal - discountTotal - couponDiscount + convenience + giftWrap;
 
     saleTotals = {
       bagTotal,
@@ -59,9 +56,7 @@ router.post('/web/place', async (req, res) => {
       payable
     };
 
-    const baseTotals = totals
-      ? JSON.stringify(totals)
-      : JSON.stringify(saleTotals);
+    const baseTotals = totals ? JSON.stringify(totals) : JSON.stringify(saleTotals);
 
     const storedEmail = login_email || customer_email || null;
 
@@ -250,10 +245,14 @@ router.post('/web/set-payment-status', async (req, res) => {
         ean_code: row.ean_code || null
       }));
 
-      const totals =
-        saleRow.totals && typeof saleRow.totals === 'object'
-          ? saleRow.totals
-          : null;
+      let totals = saleRow.totals;
+      if (typeof totals === 'string') {
+        try {
+          totals = JSON.parse(totals);
+        } catch {
+          totals = null;
+        }
+      }
 
       saleForShiprocket = {
         id: saleId,
@@ -270,7 +269,13 @@ router.post('/web/set-payment-status', async (req, res) => {
         items: itemsForShiprocket
       };
 
-      shouldAutoFulfill = true;
+      if (
+        itemsForShiprocket.length &&
+        totals &&
+        Number(totals.payable || 0) > 0
+      ) {
+        shouldAutoFulfill = true;
+      }
     }
 
     const q = await client.query(
@@ -295,7 +300,7 @@ router.post('/web/set-payment-status', async (req, res) => {
     return res.json({ id: q.rows[0].id, payment_status: q.rows[0].payment_status });
   } catch {
     try {
-      await pool.query('ROLLBACK');
+      await client.query('ROLLBACK');
     } catch {}
     try {
       client.release();
@@ -510,8 +515,9 @@ router.post('/confirm', requireAuth, async (req, res) => {
     }
 
     let total = 0;
-    for (const it of items)
+    for (const it of items) {
       total += Number(it?.qty ?? 0) * Number(it?.price ?? 0);
+    }
 
     const s0 = await client.query(
       'SELECT id FROM sales WHERE id = $1::uuid',
