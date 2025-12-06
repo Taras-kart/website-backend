@@ -168,4 +168,111 @@ router.get('/shiprocket/pincode', async (req, res) => {
   }
 });
 
+router.get('/shiprocket/label/:saleId', async (req, res) => {
+  try {
+    const saleId = req.params.saleId;
+    const { rows } = await pool.query(
+      'SELECT * FROM shipments WHERE sale_id=$1 ORDER BY created_at DESC',
+      [saleId]
+    );
+    if (!rows.length) {
+      return res.status(404).json({ ok: false, message: 'No shipments found for this sale' });
+    }
+    const existingWithLabel = rows.find((r) => r.label_url);
+    if (existingWithLabel && existingWithLabel.label_url) {
+      return res.redirect(existingWithLabel.label_url);
+    }
+    const shipmentIds = rows
+      .map((r) => r.shiprocket_shipment_id)
+      .filter((v) => v != null);
+    if (!shipmentIds.length) {
+      return res.status(404).json({ ok: false, message: 'No Shiprocket shipment ids found' });
+    }
+    const sr = new Shiprocket({ pool });
+    await sr.init();
+    const result = await sr.assignAWBAndLabel({ shipment_id: shipmentIds });
+    const labelUrl =
+      result?.label?.label_url ||
+      result?.label_url ||
+      null;
+    if (!labelUrl) {
+      return res.status(500).json({ ok: false, message: 'Unable to generate label' });
+    }
+    return res.redirect(labelUrl);
+  } catch (e) {
+    const msg = e.response?.data || e.message || 'Failed to fetch label';
+    return res.status(500).json({ ok: false, message: msg });
+  }
+});
+
+router.get('/shiprocket/invoice/:saleId', async (req, res) => {
+  try {
+    const saleId = req.params.saleId;
+    const { rows } = await pool.query(
+      'SELECT * FROM shipments WHERE sale_id=$1 ORDER BY created_at ASC',
+      [saleId]
+    );
+    if (!rows.length) {
+      return res.status(404).json({ ok: false, message: 'No shipments found for this sale' });
+    }
+    const orderIds = Array.from(
+      new Set(
+        rows
+          .map((r) => r.shiprocket_order_id)
+          .filter((v) => v != null)
+      )
+    );
+    if (!orderIds.length) {
+      return res.status(404).json({ ok: false, message: 'No Shiprocket order ids found' });
+    }
+    const sr = new Shiprocket({ pool });
+    await sr.init();
+    const { data } = await sr.api('post', '/orders/print/invoice', { ids: orderIds });
+    const invoiceUrl =
+      data?.invoice_url ||
+      data?.data?.invoice_url ||
+      null;
+    if (!invoiceUrl) {
+      return res.status(500).json({ ok: false, message: 'Unable to generate invoice' });
+    }
+    return res.redirect(invoiceUrl);
+  } catch (e) {
+    const msg = e.response?.data || e.message || 'Failed to fetch invoice';
+    return res.status(500).json({ ok: false, message: msg });
+  }
+});
+
+router.get('/shiprocket/manifest/:saleId', async (req, res) => {
+  try {
+    const saleId = req.params.saleId;
+    const { rows } = await pool.query(
+      'SELECT * FROM shipments WHERE sale_id=$1 ORDER BY created_at ASC',
+      [saleId]
+    );
+    if (!rows.length) {
+      return res.status(404).json({ ok: false, message: 'No shipments found for this sale' });
+    }
+    const shipmentIds = rows
+      .map((r) => r.shiprocket_shipment_id)
+      .filter((v) => v != null);
+    if (!shipmentIds.length) {
+      return res.status(404).json({ ok: false, message: 'No Shiprocket shipment ids found' });
+    }
+    const sr = new Shiprocket({ pool });
+    await sr.init();
+    const data = await sr.generateManifest({ shipment_ids: shipmentIds });
+    const manifestUrl =
+      data?.manifest_url ||
+      data?.data?.manifest_url ||
+      null;
+    if (!manifestUrl) {
+      return res.status(500).json({ ok: false, message: 'Unable to generate manifest' });
+    }
+    return res.redirect(manifestUrl);
+  } catch (e) {
+    const msg = e.response?.data || e.message || 'Failed to fetch manifest';
+    return res.status(500).json({ ok: false, message: msg });
+  }
+});
+
 module.exports = router;
