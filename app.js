@@ -4,6 +4,8 @@ const cors = require('cors')
 
 const app = express()
 
+app.set('etag', false)
+
 const defaultOrigins = [
   'http://localhost:3000',
   'http://localhost:3001',
@@ -33,6 +35,13 @@ const corsOptions = {
 }
 
 const shiprocketPublicRoutes = require('./routes/shiprocketPublicRoutes')
+
+app.use((req, res, next) => {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
+  res.set('Pragma', 'no-cache')
+  res.set('Expires', '0')
+  next()
+})
 
 app.use(cors(corsOptions))
 app.options('*', cors(corsOptions))
