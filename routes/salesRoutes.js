@@ -92,7 +92,7 @@ router.post('/web/place', async (req, res) => {
         `INSERT INTO sale_items
          (sale_id, variant_id, qty, price, mrp, size, colour, image_url, ean_code)
          VALUES
-         ($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9)`,
+         ($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9)` ,
         [
           saleId,
           Number(it?.variant_id ?? it?.product_id),
@@ -290,7 +290,17 @@ router.post('/web/set-payment-status', async (req, res) => {
 router.get('/web', async (_req, res) => {
   try {
     const list = await pool.query(
-      'SELECT * FROM sales ORDER BY created_at DESC NULLS LAST, id DESC LIMIT 200'
+      `SELECT
+         s.*,
+         oc.payment_type AS cancellation_payment_type,
+         oc.reason AS cancellation_reason,
+         oc.cancellation_source,
+         oc.created_at AS cancellation_created_at
+       FROM sales s
+       LEFT JOIN order_cancellations oc
+         ON oc.sale_id = s.id
+       ORDER BY s.created_at DESC NULLS LAST, s.id DESC
+       LIMIT 200`
     )
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
     res.set('Pragma', 'no-cache')
@@ -310,27 +320,41 @@ router.get('/web/by-user', async (req, res) => {
     }
 
     const params = []
-    const conds = ["source = 'WEB'"]
+    const conds = ["s.source = 'WEB'"]
     const ors = []
 
     if (email) {
       params.push(email)
-      ors.push(`LOWER(customer_email) = LOWER($${params.length})`)
+      ors.push(`LOWER(s.customer_email) = LOWER($${params.length})`)
     }
     if (mobile) {
       params.push(mobile)
       ors.push(
-        `regexp_replace(customer_mobile,'\\D','','g') = regexp_replace($${params.length},'\\D','','g')`
+        `regexp_replace(s.customer_mobile,'\\D','','g') = regexp_replace($${params.length},'\\D','','g')`
       )
     }
     if (ors.length) conds.push(`(${ors.join(' OR ')})`)
 
     const salesQ = await pool.query(
-      `SELECT id, status, payment_status, created_at, totals, branch_id,
-              customer_name, customer_email, customer_mobile
-       FROM sales
+      `SELECT
+         s.id,
+         s.status,
+         s.payment_status,
+         s.created_at,
+         s.totals,
+         s.branch_id,
+         s.customer_name,
+         s.customer_email,
+         s.customer_mobile,
+         oc.payment_type AS cancellation_payment_type,
+         oc.reason AS cancellation_reason,
+         oc.cancellation_source,
+         oc.created_at AS cancellation_created_at
+       FROM sales s
+       LEFT JOIN order_cancellations oc
+         ON oc.sale_id = s.id
        WHERE ${conds.join(' AND ')}
-       ORDER BY created_at DESC NULLS LAST, id DESC
+       ORDER BY s.created_at DESC NULLS LAST, s.id DESC
        LIMIT 200`,
       params
     )
@@ -400,10 +424,25 @@ router.get('/web/:id', async (req, res) => {
   if (!id) return res.status(400).json({ message: 'id required' })
   try {
     const s = await pool.query(
-      `SELECT id, status, payment_status, created_at, totals, branch_id,
-              customer_name, customer_email, customer_mobile, shipping_address
-       FROM sales
-       WHERE id = $1::uuid`,
+      `SELECT
+         s.id,
+         s.status,
+         s.payment_status,
+         s.created_at,
+         s.totals,
+         s.branch_id,
+         s.customer_name,
+         s.customer_email,
+         s.customer_mobile,
+         s.shipping_address,
+         oc.payment_type AS cancellation_payment_type,
+         oc.reason AS cancellation_reason,
+         oc.cancellation_source,
+         oc.created_at AS cancellation_created_at
+       FROM sales s
+       LEFT JOIN order_cancellations oc
+         ON oc.sale_id = s.id
+       WHERE s.id = $1::uuid`,
       [id]
     )
     if (!s.rowCount) return res.status(404).json({ message: 'Not found' })

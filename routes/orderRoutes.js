@@ -7,7 +7,7 @@ router.get('/', getMyOrders)
 router.get('/track/:orderId/:channelId?', getTracking)
 
 router.post('/cancel', async (req, res) => {
-  const { sale_id, payment_type, reason } = req.body || {}
+  const { sale_id, payment_type, reason, cancellation_source } = req.body || {}
 
   if (!sale_id) {
     return res.status(400).json({ ok: false, message: 'sale_id required' })
@@ -77,10 +77,10 @@ router.post('/cancel', async (req, res) => {
     )
 
     await client.query(
-      `INSERT INTO order_cancellations (sale_id, payment_type, reason, created_at)
-       VALUES ($1::uuid, $2, $3, now())
+      `INSERT INTO order_cancellations (sale_id, payment_type, reason, cancellation_source, created_at)
+       VALUES ($1::uuid, $2, $3, $4, now())
        ON CONFLICT DO NOTHING`,
-      [sale_id, payment_type || salePaymentStatus, reason || null]
+      [sale_id, payment_type || salePaymentStatus, reason || null, cancellation_source || null]
     )
 
     await client.query('COMMIT')
@@ -111,7 +111,8 @@ router.post('/cancel', async (req, res) => {
     id: sale_id,
     status: 'CANCELLED',
     payment_type: payment_type || salePaymentStatus || null,
-    reason: reason || null
+    reason: reason || null,
+    cancellation_source: cancellation_source || null
   })
 })
 
