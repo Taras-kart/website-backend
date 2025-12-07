@@ -2,8 +2,11 @@ const express = require('express');
 const pool = require('../db');
 const bcrypt = require('bcryptjs');
 const nodemailer = require('nodemailer');
+const jwt = require('jsonwebtoken');
 const router = express.Router();
 require('dotenv').config();
+
+const JWT_SECRET = process.env.JWT_SECRET || 'change-me-in-env';
 
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST || 'smtp.gmail.com',
@@ -24,10 +27,43 @@ router.post('/login', async (req, res) => {
     if (result.rows.length === 0) return res.status(401).json({ message: 'Invalid credentials' });
 
     const user = result.rows[0];
-    const isMatch = password === user.password;
+
+    let isMatch = false;
+    try {
+      if (user.password) {
+        if (
+          user.password.startsWith('$2a$') ||
+          user.password.startsWith('$2b$') ||
+          user.password.startsWith('$2y$')
+        ) {
+          isMatch = await bcrypt.compare(password, user.password);
+        } else {
+          isMatch = password === user.password;
+        }
+      }
+    } catch (e) {
+      isMatch = false;
+    }
+
     if (!isMatch) return res.status(401).json({ message: 'Invalid credentials' });
 
-    res.json({ id: user.id, name: user.name, email: user.email, type: user.type || 'customer' });
+    const payload = {
+      id: user.id,
+      email: user.email,
+      type: user.type || 'customer'
+    };
+
+    const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
+
+    res.json({
+      token,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        type: user.type || 'customer'
+      }
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Server error' });
@@ -37,7 +73,10 @@ router.post('/login', async (req, res) => {
 router.get('/:email', async (req, res) => {
   const { email } = req.params;
   try {
-    const result = await pool.query('SELECT id, name, email, mobile, type, created_at FROM userstaras WHERE email = $1', [email]);
+    const result = await pool.query(
+      'SELECT id, name, email, mobile, type, created_at FROM userstaras WHERE email = $1',
+      [email]
+    );
     if (result.rows.length === 0) return res.status(404).json({ message: 'User not found' });
     res.json(result.rows[0]);
   } catch (err) {
@@ -57,7 +96,10 @@ router.post('/forgot/start', async (req, res) => {
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
-    const updateResult = await pool.query('UPDATE userstaras SET otp = $1, otp_expiry = $2 WHERE email = $3', [otp, expiresAt, email]);
+    const updateResult = await pool.query(
+      'UPDATE userstaras SET otp = $1, otp_expiry = $2 WHERE email = $3',
+      [otp, expiresAt, email]
+    );
 
     if (updateResult.rowCount === 0) {
       return res.status(500).json({ message: 'Failed to update OTP' });
@@ -91,7 +133,9 @@ router.post('/forgot/verify', async (req, res) => {
 
     const user = result.rows[0];
     if (user.otp !== otp) return res.status(400).json({ message: 'Invalid OTP' });
-    if (new Date(user.otp_expiry).getTime() < Date.now()) return res.status(400).json({ message: 'OTP expired' });
+    if (new Date(user.otp_expiry).getTime() < Date.now()) {
+      return res.status(400).json({ message: 'OTP expired' });
+    }
 
     res.json({ message: 'OTP verified' });
   } catch (err) {
@@ -102,7 +146,9 @@ router.post('/forgot/verify', async (req, res) => {
 
 router.post('/forgot/reset', async (req, res) => {
   const { email, otp, newPassword } = req.body;
-  if (!email || !otp || !newPassword) return res.status(400).json({ message: 'Email, OTP, and new password are required' });
+  if (!email || !otp || !newPassword) {
+    return res.status(400).json({ message: 'Email, OTP, and new password are required' });
+  }
 
   try {
     const result = await pool.query('SELECT otp, otp_expiry FROM userstaras WHERE email = $1', [email]);
@@ -110,7 +156,9 @@ router.post('/forgot/reset', async (req, res) => {
 
     const user = result.rows[0];
     if (user.otp !== otp) return res.status(400).json({ message: 'Invalid OTP' });
-    if (new Date(user.otp_expiry).getTime() < Date.now()) return res.status(400).json({ message: 'OTP expired' });
+    if (new Date(user.otp_expiry).getTime() < Date.now()) {
+      return res.status(400).json({ message: 'OTP expired' });
+    }
 
     await pool.query('UPDATE userstaras SET password = $1 WHERE email = $2', [newPassword, email]);
     await pool.query('UPDATE userstaras SET otp = NULL, otp_expiry = NULL WHERE email = $1', [email]);
@@ -148,12 +196,24 @@ router.post('/firebase-login', async (req, res) => {
       }
 
       await client.query('COMMIT');
-      res.json({
+
+      const payload = {
         id: user.id,
-        name: user.name,
         email: user.email,
-        mobile: user.mobile,
         type: user.type || 'B2C'
+      };
+
+      const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
+
+      res.json({
+        token,
+        user: {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          mobile: user.mobile,
+          type: user.type || 'B2C'
+        }
       });
     } catch (e) {
       await client.query('ROLLBACK');
