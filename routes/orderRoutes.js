@@ -55,7 +55,7 @@ router.post('/cancel', async (req, res) => {
     const shipQ = await client.query(
       `SELECT DISTINCT shiprocket_order_id
        FROM shipments
-       WHERE sale_id = $1
+       WHERE sale_id = $1::uuid
          AND shiprocket_order_id IS NOT NULL`,
       [sale_id]
     )
@@ -64,7 +64,7 @@ router.post('/cancel', async (req, res) => {
 
     await client.query(
       `UPDATE sales
-       SET status = $2
+       SET status = $2, updated_at = now()
        WHERE id = $1::uuid`,
       [sale_id, 'CANCELLED']
     )
@@ -72,7 +72,7 @@ router.post('/cancel', async (req, res) => {
     await client.query(
       `UPDATE shipments
        SET status = $2
-       WHERE sale_id = $1`,
+       WHERE sale_id = $1::uuid`,
       [sale_id, 'CANCELLED']
     )
 
@@ -86,7 +86,9 @@ router.post('/cancel', async (req, res) => {
     await client.query('COMMIT')
     client.release()
   } catch (e) {
-    try { await client.query('ROLLBACK') } catch (_) {}
+    try {
+      await client.query('ROLLBACK')
+    } catch (_) {}
     client.release()
     console.error('Order cancel error:', e)
     return res.status(500).json({
