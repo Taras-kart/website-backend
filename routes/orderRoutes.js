@@ -47,7 +47,9 @@ router.post('/cancel', async (req, res) => {
     if (currentStatus === 'DELIVERED' || currentStatus === 'RTO') {
       await client.query('ROLLBACK')
       client.release()
-      return res.status(400).json({ ok: false, message: 'Delivered or RTO orders cannot be cancelled' })
+      return res
+        .status(400)
+        .json({ ok: false, message: 'Delivered or RTO orders cannot be cancelled' })
     }
 
     const shipQ = await client.query(
@@ -62,8 +64,7 @@ router.post('/cancel', async (req, res) => {
 
     await client.query(
       `UPDATE sales
-       SET status = $2,
-           updated_at = now()
+       SET status = $2
        WHERE id = $1::uuid`,
       [sale_id, 'CANCELLED']
     )
@@ -85,8 +86,11 @@ router.post('/cancel', async (req, res) => {
     await client.query('COMMIT')
     client.release()
   } catch (e) {
-    try { await client.query('ROLLBACK') } catch {}
+    try {
+      await client.query('ROLLBACK')
+    } catch (ignore) {}
     client.release()
+    console.error('Order cancel error:', e.message)
     return res.status(500).json({ ok: false, message: 'Failed to cancel order' })
   }
 
