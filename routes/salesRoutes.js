@@ -290,8 +290,7 @@ router.post('/web/set-payment-status', async (req, res) => {
 router.get('/web', async (_req, res) => {
   try {
     const list = await pool.query(
-      'SELECT * FROM sales WHERE source = $1 ORDER BY created_at DESC NULLS LAST, id DESC LIMIT 50',
-      ['WEB']
+      'SELECT * FROM sales ORDER BY created_at DESC NULLS LAST, id DESC LIMIT 200'
     )
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
     res.set('Pragma', 'no-cache')
