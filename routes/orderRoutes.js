@@ -1,11 +1,102 @@
-// routes/orderRoutes.js
 const router = require('express').Router();
+const pool = require('../db');
 const { getMyOrders, getTracking } = require('../controllers/orderController');
+const Shiprocket = require('../services/shiprocketService');
 
-// /api/orders?email=...&phone=...
 router.get('/', getMyOrders);
 
-// /api/orders/track/:orderId (optional :channelId)
 router.get('/track/:orderId/:channelId?', getTracking);
+
+router.post('/cancel', async (req, res) => {
+  const { sale_id, payment_type, reason } = req.body || {};
+  if (!sale_id) {
+    return res.status(400).json({ ok: false, message: 'sale_id required' });
+  }
+
+  const client = await pool.connect();
+  let shiprocketOrderIds = [];
+  let salePaymentStatus = null;
+
+  try {
+    await client.query('BEGIN');
+
+    const q = await client.query(
+      `SELECT id, status, payment_status
+       FROM sales 
+       WHERE id = $1::uuid 
+       FOR UPDATE`,
+      [sale_id]
+    );
+
+    if (!q.rowCount) {
+      await client.query('ROLLBACK');
+      client.release();
+      return res.status(404).json({ ok: false, message: 'Order not found' });
+    }
+
+    const sale = q.rows[0];
+    salePaymentStatus = sale.payment_status || null;
+    const currentStatus = String(sale.status || '').toUpperCase();
+
+    if (currentStatus === 'CANCELLED') {
+      await client.query('ROLLBACK');
+      client.release();
+      return res.status(400).json({ ok: false, message: 'Order already cancelled' });
+    }
+
+    if (currentStatus === 'DELIVERED' || currentStatus === 'RTO') {
+      await client.query('ROLLBACK');
+      client.release();
+      return res.status(400).json({ ok: false, message: 'Delivered or RTO orders cannot be cancelled' });
+    }
+
+    const shipQ = await client.query(
+      `SELECT DISTINCT shiprocket_order_id
+       FROM shipments
+       WHERE sale_id = $1::uuid
+         AND shiprocket_order_id IS NOT NULL`,
+      [sale_id]
+    );
+
+    shiprocketOrderIds = shipQ.rows.map(r => r.shiprocket_order_id).filter(Boolean);
+
+    await client.query(
+      'UPDATE sales SET status = $2, updated_at = now() WHERE id = $1::uuid',
+      [sale_id, 'CANCELLED']
+    );
+
+    await client.query(
+      'UPDATE shipments SET status = $2 WHERE sale_id = $1::uuid',
+      [sale_id, 'CANCELLED']
+    );
+
+    await client.query('COMMIT');
+    client.release();
+  } catch (e) {
+    try {
+      await client.query('ROLLBACK');
+    } catch {}
+    client.release();
+    return res.status(500).json({ ok: false, message: 'Failed to cancel order' });
+  }
+
+  if (shiprocketOrderIds.length) {
+    try {
+      const sr = new Shiprocket({ pool });
+      await sr.init();
+      await sr.cancelOrders({ order_ids: shiprocketOrderIds });
+    } catch (e) {
+      console.error('Shiprocket cancel error', e.response?.data || e.message || e);
+    }
+  }
+
+  return res.json({
+    ok: true,
+    id: sale_id,
+    status: 'CANCELLED',
+    payment_type: payment_type || salePaymentStatus || null,
+    reason: reason || null
+  });
+});
 
 module.exports = router;

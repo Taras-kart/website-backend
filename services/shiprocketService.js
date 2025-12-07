@@ -153,6 +153,13 @@ class Shiprocket {
     const { data } = await this.api('get', '/courier/serviceability', params);
     return data;
   }
+
+  async cancelOrders({ order_ids }) {
+    const ids = Array.isArray(order_ids) ? order_ids : [order_ids];
+    if (!ids.length) return null;
+    const { data } = await this.api('post', '/orders/cancel', { ids });
+    return data;
+  }
 }
 
 module.exports = Shiprocket;
