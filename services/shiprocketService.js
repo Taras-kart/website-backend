@@ -42,8 +42,8 @@ class Shiprocket {
     }
     if (method.toLowerCase() === 'get') {
       if (payload) config.params = payload
-    } else if (payload) {
-      config.data = payload
+    } else {
+      if (payload) config.data = payload
     }
     return axios(config)
   }

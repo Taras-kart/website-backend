@@ -1,165 +1,131 @@
-const axios = require('axios');
+const router = require('express').Router()
+const pool = require('../db')
+const { getMyOrders, getTracking } = require('../controllers/orderController')
+const Shiprocket = require('../services/shiprocketService')
 
-const ROOT = process.env.SHIPROCKET_API_BASE || 'https://apiv2.shiprocket.in';
-const BASE = `${ROOT.replace(/\/+$/, '')}/v1/external`;
+router.get('/', getMyOrders)
+router.get('/track/:orderId/:channelId?', getTracking)
 
-class Shiprocket {
-  constructor({ pool }) {
-    this.pool = pool;
-    this.token = null;
-    this.fetchedAt = 0;
-    this.ttlMs = 25 * 60 * 1000;
+router.post('/cancel', async (req, res) => {
+  const { sale_id, payment_type, reason, cancellation_source } = req.body || {}
+
+  if (!sale_id) {
+    return res.status(400).json({ ok: false, message: 'sale_id required' })
   }
 
-  async login() {
-    const email = process.env.SHIPROCKET_API_USER_EMAIL;
-    const password = process.env.SHIPROCKET_API_USER_PASSWORD;
-    if (!email || !password) throw new Error('Missing Shiprocket API creds');
-    const { data } = await axios.post(
-      `${ROOT.replace(/\/+$/, '')}/v1/external/auth/login`,
-      { email, password }
-    );
-    if (!data || !data.token) throw new Error('Shiprocket login failed');
-    this.token = data.token;
-    this.fetchedAt = Date.now();
-  }
+  const client = await pool.connect()
+  let shiprocketOrderIds = []
+  let salePaymentStatus = null
 
-  async ensureToken() {
-    if (this.token && Date.now() - this.fetchedAt < this.ttlMs) return;
-    await this.login();
-  }
+  try {
+    await client.query('BEGIN')
 
-  async init() {
-    await this.ensureToken();
-  }
+    const orderQ = await client.query(
+      `SELECT id, status, payment_status
+       FROM sales
+       WHERE id = $1::uuid
+       FOR UPDATE`,
+      [sale_id]
+    )
 
-  async api(method, path, payload) {
-    await this.ensureToken();
-    const config = {
-      method,
-      url: `${BASE}${path}`,
-      headers: { Authorization: `Bearer ${this.token}` }
-    };
-    if (method.toLowerCase() === 'get') {
-      if (payload) config.params = payload;
-    } else {
-      if (payload) config.data = payload;
+    if (!orderQ.rowCount) {
+      await client.query('ROLLBACK')
+      client.release()
+      return res.status(404).json({ ok: false, message: 'Order not found' })
     }
-    return axios(config);
-  }
 
-  async upsertWarehouseFromBranch(branch) {
-    const payload = {
-      pickup_location: branch.name,
-      name: branch.name,
-      email: branch.email || 'support@example.com',
-      phone: branch.phone || '9999999999',
-      address: branch.address,
-      address_2: '',
-      city: branch.city,
-      state: branch.state,
-      country: 'India',
-      pin_code: branch.pincode
-    };
-    const { data } = await this.api(
-      'post',
-      '/settings/company/addpickup',
-      payload
-    );
-    return data;
-  }
+    const sale = orderQ.rows[0]
+    salePaymentStatus = sale.payment_status || null
+    const currentStatus = String(sale.status || '').toUpperCase()
 
-  async createOrderShipment({ channel_order_id, pickup_location, order, customer }) {
-    const payload = {
-      order_id: channel_order_id,
-      order_date: new Date().toISOString(),
-      pickup_location,
-      billing_customer_name: customer.name || 'Customer',
-      billing_last_name: '',
-      billing_address: customer.address.line1 || '',
-      billing_address_2: customer.address.line2 || '',
-      billing_city: customer.address.city || '',
-      billing_pincode: customer.address.pincode || '',
-      billing_state: customer.address.state || '',
-      billing_country: 'India',
-      billing_email: customer.email || 'na@example.com',
-      billing_phone: customer.phone || '9999999999',
-      shipping_is_billing: true,
-      order_items: order.items.map((it) => ({
-        name: it.name || `Variant ${it.variant_id}`,
-        sku: String(it.variant_id),
-        units: it.qty,
-        selling_price: Number(it.price || 0)
-      })),
-      payment_method: order.payment_method === 'COD' ? 'COD' : 'Prepaid',
-      sub_total: order.items.reduce(
-        (a, it) => a + Number(it.price || 0) * Number(it.qty || 0),
-        0
-      ),
-      length: order.dimensions?.length || 10,
-      breadth: order.dimensions?.breadth || 10,
-      height: order.dimensions?.height || 5,
-      weight: order.weight || 0.5
-    };
-    const { data } = await this.api('post', '/orders/create/adhoc', payload);
-    return data;
-  }
-
-  async assignAWBAndLabel({ shipment_id }) {
-    const ids = Array.isArray(shipment_id) ? shipment_id : [shipment_id];
-    const { data: awb } = await this.api('post', '/courier/assign/awb', {
-      shipment_id: ids
-    });
-    const { data: label } = await this.api('post', '/courier/generate/label', {
-      shipment_id: ids
-    });
-    return { awb, label };
-  }
-
-  async requestPickup({ shipment_id, pickup_date, status }) {
-    const ids = Array.isArray(shipment_id) ? shipment_id : [shipment_id];
-    const payload = { shipment_id: ids };
-    if (pickup_date) {
-      payload.pickup_date = Array.isArray(pickup_date)
-        ? pickup_date
-        : [pickup_date];
+    if (currentStatus === 'CANCELLED') {
+      await client.query('ROLLBACK')
+      client.release()
+      return res.status(400).json({ ok: false, message: 'Order already cancelled' })
     }
-    if (status) {
-      payload.status = status;
+
+    if (currentStatus === 'DELIVERED' || currentStatus === 'RTO') {
+      await client.query('ROLLBACK')
+      client.release()
+      return res
+        .status(400)
+        .json({ ok: false, message: 'Delivered or RTO orders cannot be cancelled' })
     }
-    const { data } = await this.api(
-      'post',
-      '/courier/generate/pickup',
-      payload
-    );
-    return data;
+
+    const shipQ = await client.query(
+      `SELECT DISTINCT shiprocket_order_id
+       FROM shipments
+       WHERE sale_id = $1::uuid
+         AND shiprocket_order_id IS NOT NULL`,
+      [sale_id]
+    )
+
+    shiprocketOrderIds = shipQ.rows.map(r => r.shiprocket_order_id).filter(Boolean)
+
+    await client.query(
+      `UPDATE sales
+       SET status = $2
+       WHERE id = $1::uuid`,
+      [sale_id, 'CANCELLED']
+    )
+
+    await client.query(
+      `UPDATE shipments
+       SET status = $2
+       WHERE sale_id = $1::uuid`,
+      [sale_id, 'CANCELLED']
+    )
+
+    await client.query(
+      `INSERT INTO order_cancellations (sale_id, payment_type, reason, cancellation_source, created_at)
+       VALUES ($1::uuid, $2, $3, $4, now())
+       ON CONFLICT DO NOTHING`,
+      [
+        sale_id,
+        payment_type || salePaymentStatus,
+        reason || null,
+        cancellation_source || null
+      ]
+    )
+
+    await client.query('COMMIT')
+    client.release()
+  } catch (e) {
+    try {
+      await client.query('ROLLBACK')
+    } catch (_) {}
+    try {
+      client.release()
+    } catch (_) {}
+    console.error('Order cancel error:', e)
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to cancel order',
+      error: e.message
+    })
   }
 
-  async generateManifest({ shipment_ids }) {
-    const ids = Array.isArray(shipment_ids) ? shipment_ids : [shipment_ids];
-    const { data } = await this.api('post', '/manifests/generate', {
-      shipment_id: ids
-    });
-    return data;
+  if (shiprocketOrderIds.length) {
+    try {
+      const sr = new Shiprocket({ pool })
+      await sr.init()
+      await sr.cancelOrders({ order_ids: shiprocketOrderIds })
+    } catch (e) {
+      console.error(
+        'Shiprocket cancel error',
+        (e && e.response && e.response.data) || e.message || e
+      )
+    }
   }
 
-  async checkServiceability({ pickup_postcode, delivery_postcode, cod = false, weight = 0.5 }) {
-    const params = {
-      pickup_postcode: String(pickup_postcode),
-      delivery_postcode: String(delivery_postcode),
-      cod: cod ? 1 : 0,
-      weight: Number(weight || 0.5)
-    };
-    const { data } = await this.api('get', '/courier/serviceability', params);
-    return data;
-  }
+  return res.json({
+    ok: true,
+    id: sale_id,
+    status: 'CANCELLED',
+    payment_type: payment_type || salePaymentStatus || null,
+    reason: reason || null,
+    cancellation_source: cancellation_source || null
+  })
+})
 
-  async cancelOrders({ order_ids }) {
-    const ids = Array.isArray(order_ids) ? order_ids : [order_ids];
-    if (!ids.length) return null;
-    const { data } = await this.api('post', '/orders/cancel', { ids });
-    return data;
-  }
-}
-
-module.exports = Shiprocket;
+module.exports = router
