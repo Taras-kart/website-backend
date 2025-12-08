@@ -55,7 +55,7 @@ router.post('/cancel', async (req, res) => {
     const shipQ = await client.query(
       `SELECT DISTINCT shiprocket_order_id
        FROM shipments
-       WHERE sale_id = $1::uuid
+       WHERE sale_id = $1
          AND shiprocket_order_id IS NOT NULL`,
       [sale_id]
     )
@@ -72,7 +72,7 @@ router.post('/cancel', async (req, res) => {
     await client.query(
       `UPDATE shipments
        SET status = $2
-       WHERE sale_id = $1::uuid`,
+       WHERE sale_id = $1`,
       [sale_id, 'CANCELLED']
     )
 
