@@ -64,10 +64,18 @@ router.get('/returns/eligibility/:saleId', async (req, res) => {
   }
 })
 
+router.post('/returns/upload-images', async (req, res) => {
+  try {
+    res.json({ ok: true, urls: [] })
+  } catch (e) {
+    res.status(500).json({ ok: false, message: e.message || 'upload failed' })
+  }
+})
+
 router.post('/returns', async (req, res) => {
   try {
     await ensureReturnExtras()
-    const { sale_id, type, reason, notes, items } = req.body || {}
+    const { sale_id, type, reason, notes, items, image_urls } = req.body || {}
 
     if (!sale_id) {
       return res.status(400).json({ ok: false, reason: 'sale_id required' })
@@ -105,6 +113,11 @@ router.post('/returns', async (req, res) => {
     const dbType =
       type === 'REPLACE' ? 'REPLACE' : type === 'REFUND' ? 'REFUND' : 'RETURN'
 
+    const images =
+      Array.isArray(image_urls) && image_urls.length
+        ? image_urls.filter(u => typeof u === 'string' && u.trim())
+        : null
+
     const ins = await pool.query(
       `INSERT INTO return_requests (
          sale_id,
@@ -122,7 +135,7 @@ router.post('/returns', async (req, res) => {
          bank_upi,
          refund_status
        )
-       VALUES ($1,$2,$3,$4,$5,$6,'REQUESTED',NULL,NULL,NULL,NULL,NULL,NULL,NULL)
+       VALUES ($1,$2,$3,$4,$5,$6,'REQUESTED',$7,NULL,NULL,NULL,NULL,NULL,NULL)
        RETURNING *`,
       [
         sale_id,
@@ -130,7 +143,8 @@ router.post('/returns', async (req, res) => {
         el.sale.customer_mobile || null,
         dbType,
         reason || null,
-        notes || null
+        notes || null,
+        images
       ]
     )
     const reqRow = ins.rows[0]
