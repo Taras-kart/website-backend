@@ -7,6 +7,7 @@ const router = express.Router()
 let extrasEnsured = false
 async function ensureReturnExtras() {
   if (extrasEnsured) return
+
   await pool.query(`
     ALTER TABLE return_requests
       ADD COLUMN IF NOT EXISTS evidence_images jsonb,
@@ -17,6 +18,21 @@ async function ensureReturnExtras() {
       ADD COLUMN IF NOT EXISTS bank_upi text,
       ADD COLUMN IF NOT EXISTS refund_status text
   `)
+
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_type t
+        JOIN pg_enum e ON t.oid = e.enumtypid
+        WHERE t.typname = 'return_type' AND e.enumlabel = 'REFUND'
+      ) THEN
+        ALTER TYPE return_type ADD VALUE 'REFUND';
+      END IF;
+    END$$;
+  `)
+
   extrasEnsured = true
 }
 
