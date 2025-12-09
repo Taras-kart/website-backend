@@ -1,6 +1,6 @@
 const express = require('express')
-const pool = require('./db')
-const ReturnsService = require('./services/returnsService')
+const pool = require('../db')
+const ReturnsService = require('../services/returnsService')
 
 const router = express.Router()
 
