@@ -1,6 +1,6 @@
 const express = require('express')
-const pool = require('./db')
-const ReturnsService = require('./services/returnsService')
+const pool = require('../db')
+const ReturnsService = require('../services/returnsService')
 
 const router = express.Router()
 
@@ -106,7 +106,7 @@ router.post('/returns', async (req, res) => {
       const params = []
       items.forEach((it, i) => {
         params.push(
-          `($${i * 6 + 1},$${i * 6 + 2},$${i * 6 + 3},$${i * 6 + 4},$${i * 6 + 5},$${i * 6 + 6})`
+          `($${i * 5 + 1},$${i * 5 + 2},$${i * 5 + 3},$${i * 5 + 4},$${i * 5 + 5})`
         )
         values.push(
           reqRow.id,
@@ -115,10 +115,9 @@ router.post('/returns', async (req, res) => {
           it.reason_code || null,
           it.condition_note || null
         )
-        values.push(null)
       })
       await pool.query(
-        `INSERT INTO return_items (request_id, variant_id, qty, reason_code, condition_note, reason_code)
+        `INSERT INTO return_items (request_id, variant_id, qty, reason_code, condition_note)
          VALUES ${params.join(',')}`,
         values
       )
@@ -276,7 +275,9 @@ router.post('/returns/:id/approve', async (req, res) => {
     const sale = (
       await pool.query('SELECT * FROM sales WHERE id=$1', [request.sale_id])
     ).rows[0]
-    const items = (await pool.query('SELECT * FROM return_items WHERE request_id=$1', [id])).rows
+    const items = (
+      await pool.query('SELECT * FROM return_items WHERE request_id=$1', [id])
+    ).rows
     const branch = (
       await pool.query('SELECT * FROM branches WHERE id=$1', [sale.branch_id])
     ).rows[0]
