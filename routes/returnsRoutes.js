@@ -1,6 +1,6 @@
 const express = require('express')
-const pool = require('../db')
-const ReturnsService = require('../services/returnsService')
+const pool = require('./db')
+const ReturnsService = require('./services/returnsService')
 
 const router = express.Router()
 
@@ -67,9 +67,43 @@ router.get('/returns/eligibility/:saleId', async (req, res) => {
 router.post('/returns', async (req, res) => {
   try {
     await ensureReturnExtras()
-    const { sale_id, type, reason, notes, items } = req.body
-    const el = await isEligible(sale_id)
-    if (!el.ok) return res.status(400).json(el)
+    const { sale_id, type, reason, notes, items } = req.body || {}
+
+    if (!sale_id) {
+      return res.status(400).json({ ok: false, reason: 'sale_id required' })
+    }
+
+    let el
+
+    if (type === 'REFUND') {
+      const saleRes = await pool.query('SELECT * FROM sales WHERE id=$1', [sale_id])
+      if (!saleRes.rows.length) {
+        return res.status(400).json({ ok: false, reason: 'Sale not found' })
+      }
+      const sale = saleRes.rows[0]
+      const payType = normalizePaymentType(sale)
+      if (payType !== 'PREPAID') {
+        return res
+          .status(400)
+          .json({ ok: false, reason: 'Only prepaid orders are eligible for online refund' })
+      }
+
+      const status = String(sale.status || '').toUpperCase()
+      if (!['CANCELLED', 'DELIVERED', 'RETURNED'].includes(status)) {
+        return res.status(400).json({
+          ok: false,
+          reason: 'Refund is only allowed for cancelled or delivered orders'
+        })
+      }
+
+      el = { ok: true, sale }
+    } else {
+      el = await isEligible(sale_id)
+      if (!el.ok) return res.status(400).json(el)
+    }
+
+    const dbType =
+      type === 'REPLACE' ? 'REPLACE' : type === 'REFUND' ? 'REFUND' : 'RETURN'
 
     const ins = await pool.query(
       `INSERT INTO return_requests (
@@ -94,7 +128,7 @@ router.post('/returns', async (req, res) => {
         sale_id,
         el.sale.customer_email || null,
         el.sale.customer_mobile || null,
-        type === 'REPLACE' ? 'REPLACE' : 'RETURN',
+        dbType,
         reason || null,
         notes || null
       ]
@@ -275,6 +309,18 @@ router.post('/returns/:id/approve', async (req, res) => {
     const sale = (
       await pool.query('SELECT * FROM sales WHERE id=$1', [request.sale_id])
     ).rows[0]
+
+    const payType = normalizePaymentType(sale)
+
+    if (request.type === 'REFUND') {
+      const refundStatus = payType === 'PREPAID' ? 'PENDING_REFUND' : null
+      await pool.query(
+        'UPDATE return_requests SET status=$1, refund_status=$2, updated_at=now() WHERE id=$3',
+        ['APPROVED', refundStatus, id]
+      )
+      return res.json({ ok: true })
+    }
+
     const items = (
       await pool.query('SELECT * FROM return_items WHERE request_id=$1', [id])
     ).rows
@@ -286,7 +332,6 @@ router.post('/returns/:id/approve', async (req, res) => {
     await svc.init()
     const reverse = await svc.createReversePickup({ request, sale, items, branch })
 
-    const payType = normalizePaymentType(sale)
     const refundStatus = payType === 'PREPAID' ? 'PENDING_REFUND' : null
 
     await pool.query(
