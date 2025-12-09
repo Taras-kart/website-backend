@@ -1,13 +1,12 @@
 const express = require('express')
-const pool = require('../db')
-const ReturnsService = require('../services/returnsService')
+const pool = require('./db')
+const ReturnsService = require('./services/returnsService')
 
 const router = express.Router()
 
 let extrasEnsured = false
 async function ensureReturnExtras() {
   if (extrasEnsured) return
-
   await pool.query(`
     ALTER TABLE return_requests
       ADD COLUMN IF NOT EXISTS evidence_images jsonb,
@@ -18,21 +17,6 @@ async function ensureReturnExtras() {
       ADD COLUMN IF NOT EXISTS bank_upi text,
       ADD COLUMN IF NOT EXISTS refund_status text
   `)
-
-  await pool.query(`
-    DO $$
-    BEGIN
-      IF NOT EXISTS (
-        SELECT 1
-        FROM pg_type t
-        JOIN pg_enum e ON t.oid = e.enumtypid
-        WHERE t.typname = 'return_type' AND e.enumlabel = 'REFUND'
-      ) THEN
-        ALTER TYPE return_type ADD VALUE 'REFUND';
-      END IF;
-    END$$;
-  `)
-
   extrasEnsured = true
 }
 
@@ -91,7 +75,7 @@ router.post('/returns/upload-images', async (req, res) => {
 router.post('/returns', async (req, res) => {
   try {
     await ensureReturnExtras()
-    const { sale_id, type, reason, notes, items, image_urls } = req.body || {}
+    const { sale_id, type, reason, notes, items, image_urls, bankDetails } = req.body || {}
 
     if (!sale_id) {
       return res.status(400).json({ ok: false, reason: 'sale_id required' })
@@ -134,6 +118,13 @@ router.post('/returns', async (req, res) => {
         ? image_urls.filter(u => typeof u === 'string' && u.trim())
         : null
 
+    const bd = bankDetails || {}
+    const accountName = String(bd.accountName || '').trim() || null
+    const bankName = String(bd.bankName || '').trim() || null
+    const accountNumber = String(bd.accountNumber || '').trim() || null
+    const ifsc = String(bd.ifsc || '').trim().toUpperCase() || null
+    const upiId = String(bd.upiId || '').trim() || null
+
     const ins = await pool.query(
       `INSERT INTO return_requests (
          sale_id,
@@ -151,7 +142,7 @@ router.post('/returns', async (req, res) => {
          bank_upi,
          refund_status
        )
-       VALUES ($1,$2,$3,$4,$5,$6,'REQUESTED',$7,NULL,NULL,NULL,NULL,NULL,NULL)
+       VALUES ($1,$2,$3,$4,$5,$6,'REQUESTED',$7,$8,$9,$10,$11,$12,NULL)
        RETURNING *`,
       [
         sale_id,
@@ -160,7 +151,12 @@ router.post('/returns', async (req, res) => {
         dbType,
         reason || null,
         notes || null,
-        images
+        images,
+        accountName,
+        accountNumber,
+        ifsc,
+        bankName,
+        upiId
       ]
     )
     const reqRow = ins.rows[0]
