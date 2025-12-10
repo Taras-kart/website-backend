@@ -214,7 +214,7 @@ router.get('/returns/admin/refunds', async (req, res) => {
          r.id,
          r.sale_id,
          r.type,
-         COALESCE(r.refund_status, r.status) AS status,
+         COALESCE(r.refund_status, r.status::text) AS status,
          r.refund_status,
          r.created_at,
          r.updated_at,
@@ -245,6 +245,7 @@ router.get('/returns/admin/refunds', async (req, res) => {
     res.status(500).json({ ok: false, message: e.message || 'refund list failed' })
   }
 })
+
 
 router.get('/returns/:id', async (req, res) => {
   try {
