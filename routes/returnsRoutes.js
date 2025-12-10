@@ -189,6 +189,63 @@ router.post('/returns', async (req, res) => {
   }
 })
 
+router.get('/returns/admin', async (req, res) => {
+  try {
+    await ensureReturnExtras()
+    const q = await pool.query(
+      `SELECT r.*,
+              s.totals AS sale_totals,
+              s.customer_name
+       FROM return_requests r
+       JOIN sales s ON s.id = r.sale_id
+       ORDER BY r.created_at DESC`
+    )
+    res.json({ ok: true, rows: q.rows })
+  } catch (e) {
+    res.status(500).json({ ok: false, message: e.message || 'fetch failed' })
+  }
+})
+
+router.get('/returns/admin/refunds', async (req, res) => {
+  try {
+    await ensureReturnExtras()
+    const q = await pool.query(
+      `SELECT
+         r.id,
+         r.sale_id,
+         r.type,
+         COALESCE(r.refund_status, r.status) AS status,
+         r.refund_status,
+         r.created_at,
+         r.updated_at,
+         r.bank_account_name,
+         r.bank_account_number,
+         r.bank_ifsc,
+         r.bank_name,
+         r.bank_upi,
+         r.notes AS remarks,
+         s.customer_name,
+         s.customer_email,
+         s.customer_mobile,
+         CASE
+           WHEN s.totals IS NOT NULL THEN (s.totals->>'payable')::numeric
+           ELSE 0
+         END AS amount,
+         r.id AS return_request_id,
+         'BANK/UPI'::text AS mode,
+         'system'::text AS initiated_by
+       FROM return_requests r
+       JOIN sales s ON s.id = r.sale_id
+       WHERE r.type = 'REFUND'
+          OR r.refund_status IS NOT NULL
+       ORDER BY r.created_at DESC`
+    )
+    res.json({ ok: true, rows: q.rows })
+  } catch (e) {
+    res.status(500).json({ ok: false, message: e.message || 'refund list failed' })
+  }
+})
+
 router.get('/returns/:id', async (req, res) => {
   try {
     await ensureReturnExtras()
