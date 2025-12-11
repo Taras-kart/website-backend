@@ -72,7 +72,8 @@ router.post('/change-password', requireAuth, async (req, res) => {
 });
 
 function requireSuperAdmin(req, res, next) {
-  if (!req.user || req.user.role_enum !== 'SUPER_ADMIN') {
+  const role = req.user && (req.user.role || req.user.role_enum);
+  if (role !== 'SUPER_ADMIN') {
     return res.status(403).json({ message: 'Forbidden' });
   }
   next();

@@ -14,7 +14,7 @@ const defaultOrigins = [
   'http://localhost:3002',
   'http://127.0.0.1:3002',
   'https://taras-kart-shopping-mall.vercel.app',
-  'https://website-super-admin.vercel.app/',
+  'https://website-super-admin.vercel.app',
   'https://taras-kart-admin.vercel.app'
 ]
 
