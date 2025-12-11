@@ -5,6 +5,17 @@ const { fulfillOrderWithShiprocket } = require('../services/orderFulfillment');
 
 const router = express.Router();
 
+router.get('/shiprocket/warehouses', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT id, branch_id, warehouse_id, name, pincode, city, state, address, phone, created_at, updated_at FROM shiprocket_warehouses ORDER BY id ASC'
+    );
+    res.json(rows);
+  } catch (e) {
+    res.status(500).json({ ok: false, message: 'Failed to fetch warehouses' });
+  }
+});
+
 router.post('/shiprocket/warehouses/import', async (req, res) => {
   try {
     const sr = new Shiprocket({ pool });

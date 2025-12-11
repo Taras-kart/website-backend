@@ -65,8 +65,147 @@ router.post('/login', async (req, res) => {
       }
     });
   } catch (err) {
-    console.error(err);
     res.status(500).json({ message: 'Server error' });
+  }
+});
+
+router.get('/branch-admins', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT 
+         u.id,
+         u.username,
+         u.hashed_pw,
+         u.role_enum,
+         u.branch_id,
+         u.last_login,
+         sw.warehouse_id,
+         sw.name AS warehouse_name,
+         sw.city,
+         sw.pincode,
+         sw.state,
+         sw.address,
+         sw.phone
+       FROM users u
+       LEFT JOIN shiprocket_warehouses sw ON sw.branch_id = u.branch_id
+       ORDER BY u.id`
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to fetch branch admins' });
+  }
+});
+
+router.post('/branch-admins', async (req, res) => {
+  const { username, password, role_enum, branch_id } = req.body;
+  if (!username || !password) {
+    return res.status(400).json({ message: 'Username and password are required' });
+  }
+  try {
+    const result = await pool.query(
+      `INSERT INTO users (username, hashed_pw, role_enum, branch_id, last_login)
+       VALUES ($1, $2, $3, $4, NULL)
+       RETURNING id, username, hashed_pw, role_enum, branch_id, last_login`,
+      [username, password, role_enum || null, branch_id || null]
+    );
+    const row = result.rows[0];
+    const joined = await pool.query(
+      `SELECT 
+         u.id,
+         u.username,
+         u.hashed_pw,
+         u.role_enum,
+         u.branch_id,
+         u.last_login,
+         sw.warehouse_id,
+         sw.name AS warehouse_name,
+         sw.city,
+         sw.pincode,
+         sw.state,
+         sw.address,
+         sw.phone
+       FROM users u
+       LEFT JOIN shiprocket_warehouses sw ON sw.branch_id = u.branch_id
+       WHERE u.id = $1`,
+      [row.id]
+    );
+    res.status(201).json(joined.rows[0]);
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to create branch admin' });
+  }
+});
+
+router.put('/branch-admins/:id', async (req, res) => {
+  const { id } = req.params;
+  const { username, password, role_enum, branch_id } = req.body;
+  if (!username && !password && typeof role_enum === 'undefined' && typeof branch_id === 'undefined') {
+    return res.status(400).json({ message: 'No fields to update' });
+  }
+  try {
+    let query;
+    let params;
+    if (password) {
+      query = `UPDATE users
+               SET username = $1,
+                   hashed_pw = $2,
+                   role_enum = $3,
+                   branch_id = $4
+               WHERE id = $5
+               RETURNING id, username, hashed_pw, role_enum, branch_id, last_login`;
+      params = [username, password, role_enum || null, branch_id || null, id];
+    } else {
+      query = `UPDATE users
+               SET username = $1,
+                   role_enum = $2,
+                   branch_id = $3
+               WHERE id = $4
+               RETURNING id, username, hashed_pw, role_enum, branch_id, last_login`;
+      params = [username, role_enum || null, branch_id || null, id];
+    }
+    const result = await pool.query(query, params);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Branch admin not found' });
+    }
+    const row = result.rows[0];
+    const joined = await pool.query(
+      `SELECT 
+         u.id,
+         u.username,
+         u.hashed_pw,
+         u.role_enum,
+         u.branch_id,
+         u.last_login,
+         sw.warehouse_id,
+         sw.name AS warehouse_name,
+         sw.city,
+         sw.pincode,
+         sw.state,
+         sw.address,
+         sw.phone
+       FROM users u
+       LEFT JOIN shiprocket_warehouses sw ON sw.branch_id = u.branch_id
+       WHERE u.id = $1`,
+      [row.id]
+    );
+    res.json(joined.rows[0]);
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to update branch admin' });
+  }
+});
+
+router.delete('/branch-admins/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const result = await pool.query(
+      'DELETE FROM users WHERE id = $1 RETURNING id',
+      [id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Branch admin not found' });
+    }
+    res.json({ message: 'Branch admin deleted', id: result.rows[0].id });
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to delete branch admin' });
   }
 });
 
@@ -80,7 +219,6 @@ router.get('/:email', async (req, res) => {
     if (result.rows.length === 0) return res.status(404).json({ message: 'User not found' });
     res.json(result.rows[0]);
   } catch (err) {
-    console.error(err);
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 });
@@ -118,7 +256,6 @@ router.post('/forgot/start', async (req, res) => {
 
     res.json({ message: 'OTP sent' });
   } catch (err) {
-    console.error(err);
     res.status(500).json({ message: 'Could not start reset' });
   }
 });
@@ -139,7 +276,6 @@ router.post('/forgot/verify', async (req, res) => {
 
     res.json({ message: 'OTP verified' });
   } catch (err) {
-    console.error(err);
     res.status(500).json({ message: 'Verification failed' });
   }
 });
@@ -165,7 +301,6 @@ router.post('/forgot/reset', async (req, res) => {
 
     res.json({ message: 'Password updated successfully' });
   } catch (err) {
-    console.error(err);
     res.status(500).json({ message: 'Password reset failed' });
   }
 });
@@ -217,13 +352,11 @@ router.post('/firebase-login', async (req, res) => {
       });
     } catch (e) {
       await client.query('ROLLBACK');
-      console.error(e);
       res.status(500).json({ message: 'Server error' });
     } finally {
       client.release();
     }
   } catch (err) {
-    console.error(err);
     res.status(500).json({ message: 'Server error' });
   }
 });
