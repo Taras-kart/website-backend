@@ -18,6 +18,7 @@ router.post('/login', async (req, res) => {
     );
     if (!rows.length) return res.status(401).json({ message: 'Invalid credentials' });
     const u = rows[0];
+
     if (u.is_active === false) return res.status(401).json({ message: 'Invalid credentials' });
 
     let ok = false;
@@ -94,7 +95,7 @@ function mapUserToBranchAdmin(row) {
 router.get('/branch-admins', requireAuth, requireSuperAdmin, async (req, res) => {
   try {
     const { rows } = await pool.query(
-      "SELECT id, username, role_enum, branch_id, last_login, is_active, name, branch_name, branch_code FROM users WHERE role_enum LIKE 'BRANCH%' OR role_enum = 'BRANCH_ADMIN' ORDER BY id DESC"
+      "SELECT id, username, role_enum, branch_id, last_login, is_active, name, branch_name, branch_code FROM users WHERE role_enum::text LIKE 'BRANCH%' ORDER BY id DESC"
     );
     res.json(rows.map(mapUserToBranchAdmin));
   } catch (e) {
@@ -113,15 +114,38 @@ router.post('/branch-admins', requireAuth, requireSuperAdmin, async (req, res) =
     if (existing.rows.length) {
       return res.status(409).json({ message: 'Admin with this email already exists' });
     }
+
     const hashed = await bcrypt.hash(password, 10);
+
+    const branchRoleMap = {
+      '1': 'BRANCH1',
+      '2': 'BRANCH2',
+      '3': 'BRANCH3',
+      '4': 'BRANCH4',
+      '5': 'BRANCH5'
+    };
+
+    let branchId = null;
+    let roleEnum = null;
+
+    if (branch_code && branchRoleMap[String(branch_code)]) {
+      roleEnum = branchRoleMap[String(branch_code)];
+      branchId = Number(branch_code);
+    } else {
+      roleEnum = 'BRANCH1';
+      branchId = 1;
+    }
+
     const insertQuery = `
-      INSERT INTO users (username, hashed_pw, role_enum, is_active, name, branch_name, branch_code)
-      VALUES ($1, $2, 'BRANCH_ADMIN', true, $3, $4, $5)
+      INSERT INTO users (username, hashed_pw, role_enum, branch_id, is_active, name, branch_name, branch_code)
+      VALUES ($1, $2, $3, $4, true, $5, $6, $7)
       RETURNING id, username, role_enum, branch_id, last_login, is_active, name, branch_name, branch_code
     `;
     const { rows } = await pool.query(insertQuery, [
       email,
       hashed,
+      roleEnum,
+      branchId,
       name || null,
       branch_name || null,
       branch_code || null
@@ -138,8 +162,8 @@ router.put('/branch-admins/:id', requireAuth, requireSuperAdmin, async (req, res
   if (!email) return res.status(400).json({ message: 'email is required' });
   try {
     const { rows: existingRows } = await pool.query(
-      'SELECT * FROM users WHERE id = $1 AND (role_enum LIKE $2 OR role_enum = $3)',
-      [id, 'BRANCH%', 'BRANCH_ADMIN']
+      "SELECT * FROM users WHERE id = $1 AND role_enum::text LIKE 'BRANCH%'",
+      [id]
     );
     if (!existingRows.length) return res.status(404).json({ message: 'Branch admin not found' });
 
@@ -184,7 +208,7 @@ router.put('/branch-admins/:id', requireAuth, requireSuperAdmin, async (req, res
     const updateQuery = `
       UPDATE users
       SET ${updateParts.join(', ')}
-      WHERE id = $${idx} AND (role_enum LIKE 'BRANCH%' OR role_enum = 'BRANCH_ADMIN')
+      WHERE id = $${idx} AND role_enum::text LIKE 'BRANCH%'
       RETURNING id, username, role_enum, branch_id, last_login, is_active, name, branch_name, branch_code
     `;
     const { rows } = await pool.query(updateQuery, params);
@@ -202,7 +226,7 @@ router.delete('/branch-admins/:id', requireAuth, requireSuperAdmin, async (req, 
       `
       UPDATE users
       SET is_active = false
-      WHERE id = $1 AND (role_enum LIKE 'BRANCH%' OR role_enum = 'BRANCH_ADMIN')
+      WHERE id = $1 AND role_enum::text LIKE 'BRANCH%'
       RETURNING id, username, role_enum, branch_id, last_login, is_active, name, branch_name, branch_code
       `,
       [id]
