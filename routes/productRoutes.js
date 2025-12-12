@@ -68,9 +68,7 @@ const STOPWORDS = new Set([
   'less',
   'more',
   'than',
-  'price',
-  'underwear',
-  'underware'
+  'price'
 ])
 
 const SYNONYMS = {
@@ -81,25 +79,22 @@ const SYNONYMS = {
   kids: ['kid', 'children', 'child', 'boys', 'girls'],
   kid: ['kids', 'children', 'child', 'boys', 'girls'],
   children: ['kids', 'kid', 'child', 'boys', 'girls'],
-  underwear: ['underware', 'underwares', 'innerwear', 'inners'],
-  underware: ['underwear', 'underwares', 'innerwear', 'inners'],
-  underwares: ['underwear', 'underware', 'innerwear', 'inners'],
-  innerwear: ['underwear', 'underware', 'underwares', 'inners'],
-  inners: ['innerwear', 'underwear', 'underware', 'underwares'],
-  chudi: ['chudidar', 'chudidhar', 'chudithar', 'chudidars', 'churidar', 'churidar'],
-  chudidar: ['chudi', 'chudidhar', 'chudithar', 'chudidars', 'churidar'],
-  chudidhar: ['chudi', 'chudidar', 'chudithar', 'chudidars', 'churidar'],
-  chudithar: ['chudi', 'chudidar', 'chudidhar', 'chudidars', 'churidar'],
-  chudidars: ['chudi', 'chudidar', 'chudidhar', 'chudithar', 'churidar'],
-  churidar: ['chudi', 'chudidar', 'chudidhar', 'chudithar', 'chudidars'],
-  pants: ['pant', 'trouser', 'trousers', 'bottom', 'bottoms'],
-  pant: ['pants', 'trouser', 'trousers', 'bottom', 'bottoms'],
-  trouser: ['trousers', 'pant', 'pants', 'bottom', 'bottoms'],
-  trousers: ['trouser', 'pant', 'pants', 'bottom', 'bottoms'],
-  jeans: ['jean', 'denim'],
-  jean: ['jeans', 'denim'],
-  leggings: ['legging', 'tights'],
-  legging: ['leggings', 'tights']
+  underwear: ['underware', 'underwares', 'innerwear', 'inners', 'brief', 'briefs', 'boxer', 'boxers'],
+  underware: ['underwear', 'underwares', 'innerwear', 'inners', 'brief', 'briefs', 'boxer', 'boxers'],
+  underwares: ['underwear', 'underware', 'innerwear', 'inners', 'brief', 'briefs', 'boxer', 'boxers'],
+  innerwear: ['underwear', 'underware', 'underwares', 'inners', 'brief', 'briefs', 'boxer', 'boxers'],
+  inners: ['innerwear', 'underwear', 'underware', 'underwares', 'brief', 'briefs', 'boxer', 'boxers'],
+  chudi: ['chudidar', 'chudidhar', 'chudithar', 'chudidars', 'churidar', 'salwar', 'suit', 'set'],
+  chudidar: ['chudi', 'chudidhar', 'chudithar', 'chudidars', 'churidar', 'salwar', 'suit', 'set'],
+  churidar: ['chudi', 'chudidar', 'chudidhar', 'chudithar', 'chudidars', 'salwar', 'suit', 'set'],
+  pants: ['pant', 'trouser', 'trousers', 'bottom', 'bottoms', 'jeans', 'denim'],
+  pant: ['pants', 'trouser', 'trousers', 'bottom', 'bottoms', 'jeans', 'denim'],
+  trouser: ['trousers', 'pant', 'pants', 'bottom', 'bottoms', 'jeans', 'denim'],
+  trousers: ['trouser', 'pant', 'pants', 'bottom', 'bottoms', 'jeans', 'denim'],
+  jeans: ['jean', 'denim', 'pants', 'pant'],
+  jean: ['jeans', 'denim', 'pants', 'pant'],
+  leggings: ['legging', 'tights', 'bottom', 'bottoms'],
+  legging: ['leggings', 'tights', 'bottom', 'bottoms']
 }
 
 const parsePriceRangeFromQuery = (raw) => {
@@ -186,29 +181,13 @@ const levenshteinDistance = (a, b) => {
   return dp[s.length][t.length]
 }
 
-const fuzzyWordMatch = (needle, hay) => {
+const fuzzyContains = (needle, hay) => {
   const n = normalizeKey(needle)
   const h = normalizeKey(hay)
   if (!n || !h) return false
   if (h.includes(n)) return true
   const maxD = n.length <= 4 ? 1 : n.length <= 7 ? 2 : 3
   return levenshteinDistance(n, h) <= maxD
-}
-
-const scoreSuggestion = (q, candidate) => {
-  const qs = normalizeKey(q)
-  const cs = normalizeKey(candidate)
-  if (!qs || !cs) return 999
-  if (cs.startsWith(qs)) return 0
-  if (cs.includes(qs)) return 1
-  const parts = normalizeText(candidate).split(' ').filter(Boolean)
-  let best = 999
-  for (const p of parts) {
-    const d = levenshteinDistance(qs, p)
-    best = Math.min(best, d)
-  }
-  if (best <= 3) return 2 + best
-  return 999
 }
 
 const getBranchIdFromReq = (req) => {
@@ -382,6 +361,32 @@ const buildProductSelectSql = ({ where, branchIdx, cloudIdx }) => `
   WHERE ${where}
 `
 
+const priceExpr = `
+  COALESCE(
+    NULLIF(
+      CASE
+        WHEN v.b2c_discount_pct IS NOT NULL AND v.b2c_discount_pct > 0
+          THEN ROUND(v.mrp::numeric * (100 - v.b2c_discount_pct)::numeric / 100, 2)
+        ELSE NULL
+      END, 0
+    ),
+    NULLIF(v.sale_price::numeric, 0),
+    v.mrp::numeric
+  )
+`
+
+const buildLooseSearchWhereSql = (tokens, params) => {
+  const ors = []
+  for (const t of tokens) {
+    const tt = String(t || '').trim()
+    if (!tt) continue
+    params.push(`%${tt}%`)
+    const idx = params.length
+    ors.push(`(p.name ILIKE $${idx} OR p.brand_name ILIKE $${idx} OR v.colour ILIKE $${idx} OR p.gender ILIKE $${idx})`)
+  }
+  return ors.length ? `(${ors.join(' OR ')})` : 'TRUE'
+}
+
 router.get('/', async (req, res) => {
   try {
     const genderQ = toGender(req.query.gender || req.query.category || '')
@@ -411,45 +416,17 @@ router.get('/', async (req, res) => {
 
     const tokens = buildTokens(q)
     if (tokens.length) {
-      const parts = []
-      for (const t of tokens) {
-        params.push(`%${t}%`)
-        const idx = params.length
-        parts.push(
-          `(p.name ILIKE $${idx} OR p.brand_name ILIKE $${idx} OR v.colour ILIKE $${idx} OR p.gender ILIKE $${idx})`
-        )
-      }
-      where += ` AND (${parts.join(' AND ')})`
+      where += ` AND ${buildLooseSearchWhereSql(tokens, params)}`
     }
 
     if (priceMin != null) {
       params.push(priceMin)
-      where += ` AND COALESCE(
-        NULLIF(
-          CASE
-            WHEN v.b2c_discount_pct IS NOT NULL AND v.b2c_discount_pct > 0
-              THEN ROUND(v.mrp::numeric * (100 - v.b2c_discount_pct)::numeric / 100, 2)
-            ELSE NULL
-          END, 0
-        ),
-        NULLIF(v.sale_price::numeric, 0),
-        v.mrp::numeric
-      ) >= $${params.length}`
+      where += ` AND ${priceExpr} >= $${params.length}`
     }
 
     if (priceMax != null) {
       params.push(priceMax)
-      where += ` AND COALESCE(
-        NULLIF(
-          CASE
-            WHEN v.b2c_discount_pct IS NOT NULL AND v.b2c_discount_pct > 0
-              THEN ROUND(v.mrp::numeric * (100 - v.b2c_discount_pct)::numeric / 100, 2)
-            ELSE NULL
-          END, 0
-        ),
-        NULLIF(v.sale_price::numeric, 0),
-        v.mrp::numeric
-      ) <= $${params.length}`
+      where += ` AND ${priceExpr} <= $${params.length}`
     }
 
     if (wantHasImageOnly) where = addHasImageWhere(where)
@@ -483,7 +460,7 @@ router.get('/', async (req, res) => {
 router.get('/suggest', async (req, res) => {
   try {
     const qRaw = String(req.query.q || '').trim()
-    if (!qRaw || qRaw.length < 1) return res.json([])
+    if (!qRaw) return res.json([])
 
     const genderQ = toGender(req.query.gender || req.query.category || '')
     const { cleanedQuery } = parsePriceRangeFromQuery(qRaw)
@@ -499,21 +476,15 @@ router.get('/suggest', async (req, res) => {
       where += ` AND p.gender = $${params.length}`
     }
 
-    const tokens = buildTokens(q)
-    const parts = []
-    if (tokens.length) {
-      for (const t of tokens) {
-        params.push(`%${t}%`)
-        const idx = params.length
-        parts.push(`(p.name ILIKE $${idx} OR p.brand_name ILIKE $${idx} OR v.colour ILIKE $${idx})`)
-      }
-    } else {
-      params.push(`%${String(q).trim()}%`)
+    const baseTokens = buildTokens(q)
+    const tokens = baseTokens.length ? baseTokens : buildTokens(qRaw)
+    const sqlLikeParts = []
+    for (const t of tokens) {
+      params.push(`%${t}%`)
       const idx = params.length
-      parts.push(`(p.name ILIKE $${idx} OR p.brand_name ILIKE $${idx} OR v.colour ILIKE $${idx})`)
+      sqlLikeParts.push(`(p.name ILIKE $${idx} OR p.brand_name ILIKE $${idx} OR v.colour ILIKE $${idx} OR p.gender ILIKE $${idx})`)
     }
-
-    where += ` AND (${parts.join(' AND ')})`
+    if (sqlLikeParts.length) where += ` AND (${sqlLikeParts.join(' OR ')})`
 
     params.push(branchId)
     const branchIdx = params.length
@@ -534,12 +505,10 @@ router.get('/suggest', async (req, res) => {
             AND ($${branchIdx}::int IS NULL OR bvs.branch_id = $${branchIdx}::int)
         ) bvs ON TRUE
         WHERE ${where}
-        ORDER BY p.name ASC
-        LIMIT 300
+        LIMIT 600
       )
       SELECT * FROM base
     `
-
     const { rows } = await pool.query(sql, params)
 
     const candidates = []
@@ -550,35 +519,31 @@ router.get('/suggest', async (req, res) => {
       if (r.gender) candidates.push(String(r.gender))
     }
 
-    const scored = []
-    const used = new Set()
+    const qk = normalizeKey(qRaw)
+    const uniq = []
+    const seen = new Set()
 
     for (const c of candidates) {
-      const key = String(c || '').trim()
-      const lk = key.toLowerCase()
-      if (!key || used.has(lk)) continue
-      used.add(lk)
+      const s = String(c || '').trim()
+      const lk = s.toLowerCase()
+      if (!s || seen.has(lk)) continue
+      seen.add(lk)
+      uniq.push(s)
+    }
 
-      let score = scoreSuggestion(qRaw, key)
-      if (score >= 999 && tokens.length) {
-        const words = normalizeText(key).split(' ').filter(Boolean)
-        let ok = true
-        for (const t of tokens) {
-          let hit = false
-          for (const w of words) {
-            if (fuzzyWordMatch(t, w)) {
-              hit = true
-              break
-            }
-          }
-          if (!hit) {
-            ok = false
-            break
-          }
-        }
-        if (ok) score = 10
+    const scored = []
+    for (const c of uniq) {
+      let score = 999
+      const ck = normalizeKey(c)
+      if (ck.startsWith(qk)) score = 0
+      else if (ck.includes(qk)) score = 1
+      else {
+        const words = normalizeText(c).split(' ').filter(Boolean)
+        let best = 999
+        for (const w of words) best = Math.min(best, levenshteinDistance(qRaw, w))
+        if (best <= 3) score = 2 + best
       }
-      if (score < 999) scored.push({ v: key, score })
+      scored.push({ v: c, score })
     }
 
     scored.sort((a, b) => {
@@ -586,20 +551,60 @@ router.get('/suggest', async (req, res) => {
       return a.v.length - b.v.length
     })
 
-    const out = []
-    const outSeen = new Set()
-    for (const x of scored) {
-      const k = x.v.toLowerCase()
-      if (!outSeen.has(k)) {
-        outSeen.add(k)
-        out.push(x.v)
-        if (out.length >= 10) break
-      }
-    }
-
-    res.json(out)
+    res.json(scored.slice(0, 10).map((x) => x.v))
   } catch (err) {
     res.status(500).json({ message: 'Server error', error: err.message })
+  }
+})
+
+router.get('/search', async (req, res) => {
+  try {
+    const queryRaw = req.query.q || req.query.query
+    if (!queryRaw || !String(queryRaw).trim()) return res.status(400).json({ message: 'Search query is required' })
+
+    const genderQ = toGender(req.query.gender || req.query.category || '')
+    const { cleanedQuery, priceMin, priceMax } = parsePriceRangeFromQuery(String(queryRaw))
+    const q = cleanedQuery || String(queryRaw)
+    const tokens = buildTokens(q)
+
+    const params = []
+    let where = 'v.is_active = TRUE'
+
+    if (genderQ) {
+      params.push(genderQ)
+      where += ` AND p.gender = $${params.length}`
+    }
+
+    const loose = tokens.length ? buildLooseSearchWhereSql(tokens, params) : 'TRUE'
+    where += ` AND ${loose}`
+
+    if (priceMin != null) {
+      params.push(priceMin)
+      where += ` AND ${priceExpr} >= $${params.length}`
+    }
+
+    if (priceMax != null) {
+      params.push(priceMax)
+      where += ` AND ${priceExpr} <= $${params.length}`
+    }
+
+    const branchId = getBranchIdFromReq(req)
+    params.push(branchId)
+    const branchIdx = params.length
+
+    const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh'
+    params.push(cloud)
+    const cloudIdx = params.length
+
+    const sql = `
+      ${buildProductSelectSql({ where, branchIdx, cloudIdx })}
+      ORDER BY v.id DESC
+      LIMIT 4000
+    `
+    const { rows } = await pool.query(sql, params)
+    res.json(rows)
+  } catch (err) {
+    res.status(500).json({ message: 'Error searching products', error: err.message })
   }
 })
 
@@ -668,91 +673,6 @@ router.get('/gender/:gender', async (req, res) => {
     res.json(rows)
   } catch (err) {
     res.status(500).json({ message: 'Server error', error: err.message })
-  }
-})
-
-router.get('/search', async (req, res) => {
-  try {
-    const queryRaw = req.query.q || req.query.query
-    if (!queryRaw || !String(queryRaw).trim()) {
-      return res.status(400).json({ message: 'Search query is required' })
-    }
-
-    const { cleanedQuery, priceMin, priceMax } = parsePriceRangeFromQuery(String(queryRaw))
-    const tokens = buildTokens(cleanedQuery || String(queryRaw))
-
-    const genderQ = toGender(req.query.gender || req.query.category || '')
-    const params = []
-    let where = 'v.is_active = TRUE'
-
-    if (genderQ) {
-      params.push(genderQ)
-      where += ` AND p.gender = $${params.length}`
-    }
-
-    if (tokens.length) {
-      const parts = []
-      for (const t of tokens) {
-        params.push(`%${t}%`)
-        const idx = params.length
-        parts.push(
-          `(p.name ILIKE $${idx} OR p.brand_name ILIKE $${idx} OR v.colour ILIKE $${idx} OR p.gender ILIKE $${idx})`
-        )
-      }
-      where += ` AND (${parts.join(' AND ')})`
-    } else {
-      params.push(`%${String(queryRaw).trim()}%`)
-      const idx = params.length
-      where += ` AND (p.name ILIKE $${idx} OR p.brand_name ILIKE $${idx} OR v.colour ILIKE $${idx} OR p.gender ILIKE $${idx})`
-    }
-
-    if (priceMin != null) {
-      params.push(priceMin)
-      where += ` AND COALESCE(
-        NULLIF(
-          CASE
-            WHEN v.b2c_discount_pct IS NOT NULL AND v.b2c_discount_pct > 0
-              THEN ROUND(v.mrp::numeric * (100 - v.b2c_discount_pct)::numeric / 100, 2)
-            ELSE NULL
-          END, 0
-        ),
-        NULLIF(v.sale_price::numeric, 0),
-        v.mrp::numeric
-      ) >= $${params.length}`
-    }
-
-    if (priceMax != null) {
-      params.push(priceMax)
-      where += ` AND COALESCE(
-        NULLIF(
-          CASE
-            WHEN v.b2c_discount_pct IS NOT NULL AND v.b2c_discount_pct > 0
-              THEN ROUND(v.mrp::numeric * (100 - v.b2c_discount_pct)::numeric / 100, 2)
-            ELSE NULL
-          END, 0
-        ),
-        NULLIF(v.sale_price::numeric, 0),
-        v.mrp::numeric
-      ) <= $${params.length}`
-    }
-
-    const branchId = getBranchIdFromReq(req)
-    params.push(branchId)
-    const branchIdx = params.length
-
-    const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh'
-    params.push(cloud)
-    const cloudIdx = params.length
-
-    const sql = `
-      ${buildProductSelectSql({ where, branchIdx, cloudIdx })}
-      ORDER BY v.id DESC
-      LIMIT 2000
-    `
-    const { rows } = await pool.query(sql, params)
-    res.json(rows)
-  } catch (err) {
-    res.status(500).json({ message: 'Error searching products', error: err.message })
   }
 })
 
