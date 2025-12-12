@@ -2,24 +2,39 @@ const express = require('express');
 const pool = require('../db');
 const router = express.Router();
 
+const toInt = (v) => {
+  const n = Number(v);
+  return Number.isInteger(n) ? n : null;
+};
+
 router.post('/', async (req, res) => {
   const { user_id, product_id } = req.body;
-  if (!user_id || !product_id) {
+  if (user_id === undefined || user_id === null || product_id === undefined || product_id === null) {
     return res.status(400).json({ message: 'User ID and Product ID are required' });
   }
+
+  const uid = toInt(user_id);
+  const pid = toInt(product_id);
+
+  if (!uid || !pid) {
+    return res.status(400).json({ message: 'Invalid user_id or product_id' });
+  }
+
   try {
-    const prod = await pool.query('SELECT 1 FROM products WHERE id = $1', [product_id]);
+    const prod = await pool.query('SELECT 1 FROM products WHERE id = $1', [pid]);
     if (!prod.rowCount) {
       return res.status(400).json({ message: 'Invalid product_id (no such product)' });
     }
+
     await pool.query(
       `INSERT INTO taraswishlist (user_id, product_id)
        SELECT $1, $2
        WHERE NOT EXISTS (
          SELECT 1 FROM taraswishlist WHERE user_id = $1 AND product_id = $2
        )`,
-      [user_id, product_id]
+      [uid, pid]
     );
+
     res.json({ message: 'Added to wishlist' });
   } catch (err) {
     res.status(500).json({ message: 'Server error', error: err.message });
@@ -27,7 +42,9 @@ router.post('/', async (req, res) => {
 });
 
 router.get('/:user_id', async (req, res) => {
-  const userId = req.params.user_id;
+  const uid = toInt(req.params.user_id);
+  if (!uid) return res.status(400).json({ message: 'Invalid user_id' });
+
   try {
     const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh';
 
@@ -107,7 +124,7 @@ router.get('/:user_id', async (req, res) => {
       ORDER BY pv.product_id DESC
     `;
 
-    const { rows } = await pool.query(sql, [cloud, userId]);
+    const { rows } = await pool.query(sql, [cloud, uid]);
     return res.json(rows);
   } catch (err) {
     res.status(500).json({ message: 'Error fetching wishlist', error: err.message });
@@ -116,13 +133,21 @@ router.get('/:user_id', async (req, res) => {
 
 router.delete('/', async (req, res) => {
   const { user_id, product_id } = req.body;
-  if (!user_id || !product_id) {
+  if (user_id === undefined || user_id === null || product_id === undefined || product_id === null) {
     return res.status(400).json({ message: 'User ID and Product ID are required' });
   }
+
+  const uid = toInt(user_id);
+  const pid = toInt(product_id);
+
+  if (!uid || !pid) {
+    return res.status(400).json({ message: 'Invalid user_id or product_id' });
+  }
+
   try {
     await pool.query('DELETE FROM taraswishlist WHERE user_id = $1 AND product_id = $2', [
-      user_id,
-      product_id
+      uid,
+      pid
     ]);
     res.json({ message: 'Removed from wishlist' });
   } catch (err) {
