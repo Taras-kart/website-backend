@@ -1,9 +1,69 @@
 const router = require('express').Router()
 const pool = require('../db')
-const { getMyOrders, getTracking } = require('../controllers/orderController')
+const { requireAuth } = require('../middleware/auth')
+const { getTracking } = require('../controllers/orderController')
 const Shiprocket = require('../services/shiprocketService')
 
-router.get('/', getMyOrders)
+router.get('/', requireAuth, async (req, res) => {
+  try {
+    const role = String(req.user?.role_enum || '').toUpperCase()
+    const isSuper = role === 'SUPER_ADMIN'
+    const userBranchId = Number(req.user?.branch_id || 0)
+
+    const requestedBranchIdRaw = String(req.query.branch_id || '').trim()
+    const requestedBranchId = requestedBranchIdRaw ? Number(requestedBranchIdRaw) : null
+
+    const params = []
+    const where = []
+
+    if (isSuper) {
+      if (requestedBranchId && Number.isFinite(requestedBranchId)) {
+        params.push(requestedBranchId)
+        where.push(`s.branch_id = $${params.length}`)
+      }
+    } else {
+      if (!userBranchId) return res.status(403).json({ message: 'Forbidden' })
+      params.push(userBranchId)
+      where.push(`s.branch_id = $${params.length}`)
+    }
+
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : ''
+
+    const q = await pool.query(
+      `SELECT
+         s.id,
+         s.status,
+         s.payment_status,
+         s.created_at,
+         s.updated_at,
+         s.total,
+         s.totals,
+         s.branch_id,
+         s.customer_name,
+         s.customer_email,
+         s.customer_mobile,
+         oc.payment_type AS cancellation_payment_type,
+         oc.reason AS cancellation_reason,
+         oc.cancellation_source,
+         oc.created_at AS cancellation_created_at
+       FROM sales s
+       LEFT JOIN order_cancellations oc
+         ON oc.sale_id = s.id
+       ${whereSql}
+       ORDER BY s.created_at DESC NULLS LAST, s.id DESC
+       LIMIT 500`,
+      params
+    )
+
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
+    res.set('Pragma', 'no-cache')
+    res.set('Expires', '0')
+    return res.json(q.rows || [])
+  } catch (e) {
+    return res.status(500).json({ message: 'Server error' })
+  }
+})
+
 router.get('/track/:orderId/:channelId?', getTracking)
 
 router.post('/cancel', async (req, res) => {
@@ -97,7 +157,6 @@ router.post('/cancel', async (req, res) => {
     try {
       client.release()
     } catch (_) {}
-    console.error('Order cancel error:', e)
     return res.status(500).json({
       ok: false,
       message: 'Failed to cancel order',
@@ -110,12 +169,7 @@ router.post('/cancel', async (req, res) => {
       const sr = new Shiprocket({ pool })
       await sr.init()
       await sr.cancelOrders({ order_ids: shiprocketOrderIds })
-    } catch (e) {
-      console.error(
-        'Shiprocket cancel error',
-        (e && e.response && e.response.data) || e.message || e
-      )
-    }
+    } catch (e) {}
   }
 
   return res.json({
