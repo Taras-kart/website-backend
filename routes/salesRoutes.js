@@ -41,13 +41,10 @@ router.post('/web/place', async (req, res) => {
     }
 
     const couponPct = Number(totals?.couponPct ?? 0)
-    const couponDiscount = Math.floor(
-      ((bagTotal - discountTotal) * couponPct) / 100
-    )
+    const couponDiscount = Math.floor(((bagTotal - discountTotal) * couponPct) / 100)
     const convenience = Number(totals?.convenience ?? 0)
     const giftWrap = Number(totals?.giftWrap ?? 0)
-    const payable =
-      bagTotal - discountTotal - couponDiscount + convenience + giftWrap
+    const payable = bagTotal - discountTotal - couponDiscount + convenience + giftWrap
 
     saleTotals = {
       bagTotal,
@@ -59,10 +56,7 @@ router.post('/web/place', async (req, res) => {
       payable
     }
 
-    const baseTotals = totals
-      ? JSON.stringify(totals)
-      : JSON.stringify(saleTotals)
-
+    const baseTotals = totals ? JSON.stringify(totals) : JSON.stringify(saleTotals)
     const storedEmail = login_email || customer_email || null
 
     const inserted = await client.query(
@@ -92,7 +86,7 @@ router.post('/web/place', async (req, res) => {
         `INSERT INTO sale_items
          (sale_id, variant_id, qty, price, mrp, size, colour, image_url, ean_code)
          VALUES
-         ($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9)` ,
+         ($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9)`,
         [
           saleId,
           Number(it?.variant_id ?? it?.product_id),
@@ -120,11 +114,7 @@ router.post('/web/place', async (req, res) => {
 
   const responseTotals = saleTotals || totals || null
 
-  if (
-    saleId &&
-    responseTotals &&
-    Number(responseTotals.payable || 0) > 0
-  ) {
+  if (saleId && responseTotals && Number(responseTotals.payable || 0) > 0) {
     const saleForShiprocket = {
       id: saleId,
       customer_email: login_email || customer_email || null,
@@ -239,17 +229,13 @@ router.post('/web/set-payment-status', async (req, res) => {
           if (!stockQ.rowCount) {
             await client.query('ROLLBACK')
             client.release()
-            return res
-              .status(400)
-              .json({ message: `Stock not found for variant ${vId}` })
+            return res.status(400).json({ message: `Stock not found for variant ${vId}` })
           }
           const onHand = Number(stockQ.rows[0].on_hand || 0)
           if (onHand < qty) {
             await client.query('ROLLBACK')
             client.release()
-            return res
-              .status(400)
-              .json({ message: `Insufficient stock for variant ${vId}` })
+            return res.status(400).json({ message: `Insufficient stock for variant ${vId}` })
           }
         }
 
@@ -496,16 +482,143 @@ router.get('/web/:id', async (req, res) => {
   }
 })
 
+router.get('/admin', requireAuth, async (req, res) => {
+  try {
+    const role = String(req.user?.role_enum || '').toUpperCase()
+    const isSuper = role === 'SUPER_ADMIN'
+    const branchId = Number(req.user?.branch_id || 0)
+
+    const params = []
+    const where = []
+
+    if (!isSuper) {
+      if (!branchId) return res.status(403).json({ message: 'Forbidden' })
+      params.push(branchId)
+      where.push(`s.branch_id = $${params.length}`)
+    }
+
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : ''
+
+    const list = await pool.query(
+      `SELECT
+         s.*,
+         oc.payment_type AS cancellation_payment_type,
+         oc.reason AS cancellation_reason,
+         oc.cancellation_source,
+         oc.created_at AS cancellation_created_at
+       FROM sales s
+       LEFT JOIN order_cancellations oc
+         ON oc.sale_id = s.id
+       ${whereSql}
+       ORDER BY s.created_at DESC NULLS LAST, s.id DESC
+       LIMIT 200`,
+      params
+    )
+
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
+    res.set('Pragma', 'no-cache')
+    res.set('Expires', '0')
+    return res.json(list.rows)
+  } catch {
+    return res.status(500).json({ message: 'Server error' })
+  }
+})
+
+router.get('/admin/:id', requireAuth, async (req, res) => {
+  const id = String(req.params.id || '').trim()
+  if (!id) return res.status(400).json({ message: 'id required' })
+
+  try {
+    const role = String(req.user?.role_enum || '').toUpperCase()
+    const isSuper = role === 'SUPER_ADMIN'
+    const branchId = Number(req.user?.branch_id || 0)
+
+    const params = [id]
+    let where = `s.id = $1::uuid`
+
+    if (!isSuper) {
+      if (!branchId) return res.status(403).json({ message: 'Forbidden' })
+      params.push(branchId)
+      where += ` AND s.branch_id = $2`
+    }
+
+    const s = await pool.query(
+      `SELECT
+         s.id,
+         s.status,
+         s.payment_status,
+         s.created_at,
+         s.totals,
+         s.branch_id,
+         s.customer_name,
+         s.customer_email,
+         s.customer_mobile,
+         s.shipping_address,
+         oc.payment_type AS cancellation_payment_type,
+         oc.reason AS cancellation_reason,
+         oc.cancellation_source,
+         oc.created_at AS cancellation_created_at
+       FROM sales s
+       LEFT JOIN order_cancellations oc
+         ON oc.sale_id = s.id
+       WHERE ${where}`,
+      params
+    )
+    if (!s.rowCount) return res.status(404).json({ message: 'Not found' })
+
+    const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh'
+
+    const itemsQ = await pool.query(
+      `SELECT
+         si.variant_id,
+         si.qty,
+         si.price,
+         si.mrp,
+         si.size,
+         si.colour,
+         si.ean_code,
+         COALESCE(
+           NULLIF(si.image_url,''),
+           NULLIF(pi.image_url,''),
+           CASE
+             WHEN si.ean_code IS NOT NULL AND si.ean_code <> ''
+             THEN CONCAT('https://res.cloudinary.com/', $2::text, '/image/upload/f_auto,q_auto/products/', si.ean_code)
+             ELSE NULL
+           END
+         ) AS image_url,
+         p.name  AS product_name,
+         p.brand_name
+       FROM sale_items si
+       LEFT JOIN product_variants v ON v.id = si.variant_id
+       LEFT JOIN products p ON p.id = v.product_id
+       LEFT JOIN product_images pi ON pi.ean_code = si.ean_code
+       WHERE si.sale_id = $1::uuid`,
+      [id, cloud]
+    )
+
+    const items = itemsQ.rows.map(r => ({
+      variant_id: r.variant_id,
+      qty: Number(r.qty || 0),
+      price: Number(r.price || 0),
+      mrp: r.mrp != null ? Number(r.mrp) : null,
+      size: r.size,
+      colour: r.colour,
+      ean_code: r.ean_code,
+      image_url: r.image_url,
+      product_name: r.product_name,
+      brand_name: r.brand_name
+    }))
+
+    return res.json({ sale: s.rows[0], items })
+  } catch {
+    return res.status(500).json({ message: 'Server error' })
+  }
+})
+
 router.post('/confirm', requireAuth, async (req, res) => {
   const { sale_id, branch_id, payment, items, client_action_id } = req.body || {}
   const branchId = Number(branch_id || req.user.branch_id)
-  if (
-    !sale_id ||
-    !branchId ||
-    !Array.isArray(items) ||
-    !items.length ||
-    !client_action_id
-  ) {
+  if (!sale_id || !branchId || !Array.isArray(items) || !items.length || !client_action_id) {
     return res
       .status(400)
       .json({ message: 'sale_id, branch_id, items[], client_action_id required' })
@@ -515,15 +628,13 @@ router.post('/confirm', requireAuth, async (req, res) => {
   try {
     await client.query('BEGIN')
 
-    const idem = await client.query(
-      'SELECT key FROM idempotency_keys WHERE key = $1',
-      [client_action_id]
-    )
+    const idem = await client.query('SELECT key FROM idempotency_keys WHERE key = $1', [
+      client_action_id
+    ])
     if (idem.rowCount) {
-      const s = await client.query(
-        'SELECT id, status, total FROM sales WHERE id = $1::uuid',
-        [sale_id]
-      )
+      const s = await client.query('SELECT id, status, total FROM sales WHERE id = $1::uuid', [
+        sale_id
+      ])
       await client.query('COMMIT')
       return res.json({
         id: sale_id,
@@ -534,13 +645,9 @@ router.post('/confirm', requireAuth, async (req, res) => {
     }
 
     let total = 0
-    for (const it of items)
-      total += Number(it?.qty ?? 0) * Number(it?.price ?? 0)
+    for (const it of items) total += Number(it?.qty ?? 0) * Number(it?.price ?? 0)
 
-    const s0 = await client.query(
-      'SELECT id FROM sales WHERE id = $1::uuid',
-      [sale_id]
-    )
+    const s0 = await client.query('SELECT id FROM sales WHERE id = $1::uuid', [sale_id])
     if (!s0.rowCount) {
       await client.query(
         `INSERT INTO sales (id, branch_id, status, total, payment_method, payment_ref)
@@ -548,10 +655,7 @@ router.post('/confirm', requireAuth, async (req, res) => {
         [sale_id, branchId, total, payment?.method || null, payment?.ref || null]
       )
     } else {
-      await client.query(
-        'UPDATE sales SET total = $2 WHERE id = $1::uuid',
-        [sale_id, total]
-      )
+      await client.query('UPDATE sales SET total = $2 WHERE id = $1::uuid', [sale_id, total])
     }
 
     for (const it of items) {
@@ -563,9 +667,7 @@ router.post('/confirm', requireAuth, async (req, res) => {
       )
       if (!s1.rowCount) {
         await client.query('ROLLBACK')
-        return res
-          .status(404)
-          .json({ message: `Variant ${vId} not found in branch` })
+        return res.status(404).json({ message: `Variant ${vId} not found in branch` })
       }
       await client.query(
         'UPDATE branch_variant_stock SET reserved = GREATEST(reserved - $3, 0) WHERE branch_id = $1 AND variant_id = $2',
@@ -573,9 +675,7 @@ router.post('/confirm', requireAuth, async (req, res) => {
       )
     }
 
-    await client.query('DELETE FROM sale_items WHERE sale_id = $1::uuid', [
-      sale_id
-    ])
+    await client.query('DELETE FROM sale_items WHERE sale_id = $1::uuid', [sale_id])
     for (const it of items) {
       await client.query(
         'INSERT INTO sale_items (sale_id, variant_id, ean_code, qty, price) VALUES ($1::uuid,$2,$3,$4,$5)',
@@ -589,14 +689,8 @@ router.post('/confirm', requireAuth, async (req, res) => {
       )
     }
 
-    await client.query('UPDATE sales SET status = $2 WHERE id = $1::uuid', [
-      sale_id,
-      'confirmed'
-    ])
-    await client.query(
-      'INSERT INTO idempotency_keys (key) VALUES ($1)',
-      [client_action_id]
-    )
+    await client.query('UPDATE sales SET status = $2 WHERE id = $1::uuid', [sale_id, 'confirmed'])
+    await client.query('INSERT INTO idempotency_keys (key) VALUES ($1)', [client_action_id])
 
     await client.query('COMMIT')
     return res.json({ id: sale_id, status: 'confirmed', total })
