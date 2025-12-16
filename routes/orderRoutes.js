@@ -32,16 +32,25 @@ router.get('/', requireAuth, async (req, res) => {
     const q = await pool.query(
       `SELECT
          s.id,
+         s.source,
          s.status,
          s.payment_status,
+         s.payment_method,
+         s.payment_ref,
          s.created_at,
          s.total,
          s.totals,
          s.branch_id,
          s.customer_name,
          s.customer_email,
-         s.customer_mobile
+         s.customer_mobile,
+         oc.payment_type AS cancellation_payment_type,
+         oc.reason AS cancellation_reason,
+         oc.cancellation_source,
+         oc.created_at AS cancellation_created_at
        FROM sales s
+       LEFT JOIN order_cancellations oc
+         ON oc.sale_id = s.id
        ${whereSql}
        ORDER BY s.created_at DESC NULLS LAST, s.id DESC
        LIMIT 500`,
