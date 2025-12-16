@@ -1,7 +1,13 @@
 const { randomUUID } = require('crypto')
 const Shiprocket = require('./shiprocketService')
 
-const FORCE_BRANCH_ID = null
+const FORCE_BRANCH_ID = process.env.SHIPROCKET_FORCE_BRANCH_ID
+  ? Number(process.env.SHIPROCKET_FORCE_BRANCH_ID)
+  : null
+
+const FALLBACK_BRANCH_ID = process.env.SHIPROCKET_FALLBACK_BRANCH_ID
+  ? Number(process.env.SHIPROCKET_FALLBACK_BRANCH_ID)
+  : null
 
 function haversineKm(a, b) {
   const toRad = d => (d * Math.PI) / 180
@@ -18,10 +24,7 @@ function haversineKm(a, b) {
 
 async function customerLocFromSale(sale, pool) {
   if (sale.shipping_address?.lat && sale.shipping_address?.lng) {
-    return {
-      lat: Number(sale.shipping_address.lat),
-      lng: Number(sale.shipping_address.lng)
-    }
+    return { lat: Number(sale.shipping_address.lat), lng: Number(sale.shipping_address.lng) }
   }
   const pc = sale.shipping_address?.pincode || sale.pincode || null
   if (!pc) return { lat: null, lng: null }
@@ -44,12 +47,11 @@ async function candidateBranches(pool, variantId, qty) {
 }
 
 async function pickBranchForItem(pool, variantId, qty, sale, customerLoc) {
-  const rows = await candidateBranches(pool, variantId, qty)
-  if (!rows.length) return null
+  if (FORCE_BRANCH_ID != null) return FORCE_BRANCH_ID
 
-  if (FORCE_BRANCH_ID != null) {
-    const forced = rows.find(r => Number(r.id) === Number(FORCE_BRANCH_ID))
-    if (forced) return forced.id
+  const rows = await candidateBranches(pool, variantId, qty)
+  if (!rows.length) {
+    if (FALLBACK_BRANCH_ID != null) return FALLBACK_BRANCH_ID
     return null
   }
 
@@ -59,10 +61,7 @@ async function pickBranchForItem(pool, variantId, qty, sale, customerLoc) {
 
   if (customerLoc.lat != null && customerLoc.lng != null) {
     const sorted = poolRows
-      .map(r => ({
-        r,
-        d: haversineKm({ lat: r.lat, lng: r.lng }, customerLoc)
-      }))
+      .map(r => ({ r, d: haversineKm({ lat: r.lat, lng: r.lng }, customerLoc) }))
       .sort((a, b) => a.d - b.d)
     return sorted[0].r.id
   }
@@ -72,12 +71,7 @@ async function pickBranchForItem(pool, variantId, qty, sale, customerLoc) {
 
 async function planShipmentsForOrder(sale, pool) {
   if (FORCE_BRANCH_ID != null) {
-    return [
-      {
-        branch_id: Number(FORCE_BRANCH_ID),
-        items: sale.items
-      }
-    ]
+    return [{ branch_id: FORCE_BRANCH_ID, items: sale.items }]
   }
 
   const loc = await customerLocFromSale(sale, pool)
@@ -92,11 +86,7 @@ async function planShipmentsForOrder(sale, pool) {
     if (!branchId) throw new Error(`Out of stock for variant ${variantId}`)
 
     if (!groups[branchId]) groups[branchId] = []
-    groups[branchId].push({
-      ...it,
-      variant_id: variantId,
-      qty
-    })
+    groups[branchId].push({ ...it, variant_id: variantId, qty })
   }
 
   return Object.entries(groups).map(([branch_id, items]) => ({
@@ -116,7 +106,8 @@ async function fulfillOrderWithShiprocket(sale, pool) {
   const payable =
     typeof sale.totals === 'object' && sale.totals !== null ? Number(sale.totals.payable || 0) : 0
 
-  const paymentMethodForShiprocket = sale.payment_status === 'COD' && payable > 0 ? 'COD' : 'Prepaid'
+  const paymentMethodForShiprocket =
+    String(sale.payment_status || '').toUpperCase() === 'COD' && payable > 0 ? 'COD' : 'Prepaid'
 
   for (const group of groups) {
     const wh = (
@@ -159,15 +150,11 @@ async function fulfillOrderWithShiprocket(sale, pool) {
     let labelUrl = null
 
     if (shipmentId) {
-      try {
-        const res = await sr.assignAWBAndLabel({ shipment_id: shipmentId })
-        awb = res.awb?.response?.data?.awb_code || null
-        labelUrl = res.label?.label_url || null
-        manifestShipmentIds.push(shipmentId)
-        await sr.requestPickup({ shipment_id: shipmentId })
-      } catch (err) {
-        throw err
-      }
+      const res = await sr.assignAWBAndLabel({ shipment_id: shipmentId })
+      awb = res.awb?.response?.data?.awb_code || null
+      labelUrl = res.label?.label_url || null
+      manifestShipmentIds.push(shipmentId)
+      await sr.requestPickup({ shipment_id: shipmentId })
     }
 
     const sid = randomUUID()
