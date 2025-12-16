@@ -6,16 +6,12 @@ const Shiprocket = require('../services/shiprocketService')
 
 router.get('/', requireAuth, async (req, res) => {
   try {
-    const role =
-      String(req.user?.role_enum || req.user?.role || '').toUpperCase()
-
+    const role = String(req.user?.role_enum || req.user?.role || '').toUpperCase()
     const isSuper = role === 'SUPER_ADMIN'
     const userBranchId = Number(req.user?.branch_id || 0)
 
     const requestedBranchIdRaw = String(req.query.branch_id || '').trim()
-    const requestedBranchId = requestedBranchIdRaw
-      ? Number(requestedBranchIdRaw)
-      : null
+    const requestedBranchId = requestedBranchIdRaw ? Number(requestedBranchIdRaw) : null
 
     const params = []
     const where = []
@@ -39,7 +35,6 @@ router.get('/', requireAuth, async (req, res) => {
          s.status,
          s.payment_status,
          s.created_at,
-         s.updated_at,
          s.total,
          s.totals,
          s.branch_id,
