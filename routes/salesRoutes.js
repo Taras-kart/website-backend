@@ -5,6 +5,11 @@ const { fulfillOrderWithShiprocket } = require('../services/orderFulfillment')
 
 const router = express.Router()
 
+const WEB_BRANCH_ID = (() => {
+  const v = parseInt(process.env.WEB_BRANCH_ID || '', 10)
+  return Number.isFinite(v) && v > 0 ? v : 2
+})()
+
 router.post('/web/place', async (req, res) => {
   const {
     customer_email,
@@ -22,10 +27,12 @@ router.post('/web/place', async (req, res) => {
     return res.status(400).json({ message: 'items required' })
   }
 
+  const finalPaymentStatus = String(payment_status || 'COD').toUpperCase()
+  const resolvedBranchId = Number(branch_id || WEB_BRANCH_ID || 0) || null
+
   const client = await pool.connect()
   let saleId = null
   let saleTotals = null
-  let finalPaymentStatus = String(payment_status || 'COD').toUpperCase()
 
   try {
     await client.query('BEGIN')
@@ -59,6 +66,45 @@ router.post('/web/place', async (req, res) => {
     const baseTotals = totals ? JSON.stringify(totals) : JSON.stringify(saleTotals)
     const storedEmail = login_email || customer_email || null
 
+    if (!resolvedBranchId) {
+      await client.query('ROLLBACK')
+      client.release()
+      return res.status(400).json({ message: 'branch_id required' })
+    }
+
+    const agg = new Map()
+    for (const it of items) {
+      const vId = Number(it?.variant_id ?? it?.product_id)
+      const qty = Number(it?.qty ?? 1)
+      if (!vId || qty <= 0) continue
+      agg.set(vId, (agg.get(vId) || 0) + qty)
+    }
+
+    for (const [vId, qty] of agg.entries()) {
+      const stockQ = await client.query(
+        'SELECT on_hand FROM branch_variant_stock WHERE branch_id=$1 AND variant_id=$2 FOR UPDATE',
+        [resolvedBranchId, vId]
+      )
+      if (!stockQ.rowCount) {
+        await client.query('ROLLBACK')
+        client.release()
+        return res.status(400).json({ message: `Stock not found for variant ${vId} in branch ${resolvedBranchId}` })
+      }
+      const onHand = Number(stockQ.rows[0].on_hand || 0)
+      if (onHand < qty) {
+        await client.query('ROLLBACK')
+        client.release()
+        return res.status(400).json({ message: `Insufficient stock for variant ${vId} in branch ${resolvedBranchId}` })
+      }
+    }
+
+    for (const [vId, qty] of agg.entries()) {
+      await client.query(
+        'UPDATE branch_variant_stock SET on_hand = on_hand - $3 WHERE branch_id=$1 AND variant_id=$2',
+        [resolvedBranchId, vId, qty]
+      )
+    }
+
     const inserted = await client.query(
       `INSERT INTO sales
        (source, customer_email, customer_name, customer_mobile, shipping_address, status, payment_status, totals, branch_id, total)
@@ -74,7 +120,7 @@ router.post('/web/place', async (req, res) => {
         'PLACED',
         finalPaymentStatus,
         baseTotals,
-        branch_id || null,
+        resolvedBranchId,
         payable
       ]
     )
@@ -118,9 +164,13 @@ router.post('/web/place', async (req, res) => {
 
   const responseTotals = saleTotals || totals || null
 
+  let shiprocket = null
+  let shiprocket_error = null
+
   if (saleId && responseTotals && Number(responseTotals.payable || 0) > 0) {
     const saleForShiprocket = {
       id: saleId,
+      branch_id: resolvedBranchId,
       customer_email: login_email || customer_email || null,
       customer_name: customer_name || null,
       customer_mobile: customer_mobile || null,
@@ -142,27 +192,18 @@ router.post('/web/place', async (req, res) => {
     }
 
     try {
-      const shiprocket = await fulfillOrderWithShiprocket(saleForShiprocket, pool)
-      return res.json({
-        id: saleId,
-        status: 'PLACED',
-        totals: responseTotals,
-        shiprocket
-      })
+      shiprocket = await fulfillOrderWithShiprocket(saleForShiprocket, pool)
     } catch (err) {
-      return res.status(502).json({
-        id: saleId,
-        status: 'PLACED',
-        totals: responseTotals,
-        shiprocket_error: err?.response?.data || err?.message || String(err)
-      })
+      shiprocket_error = err?.response?.data || err?.message || String(err)
     }
   }
 
   return res.json({
     id: saleId,
     status: 'PLACED',
-    totals: responseTotals
+    totals: responseTotals,
+    shiprocket,
+    shiprocket_error
   })
 })
 
@@ -205,73 +246,12 @@ router.post('/web/set-payment-status', async (req, res) => {
     }
 
     const saleRow = saleQ.rows[0]
-    const saleId = saleRow.id
     const currentStatus = String(saleRow.payment_status || '').toUpperCase()
-    const branchId = saleRow.branch_id ? Number(saleRow.branch_id) : null
 
     if (currentStatus === status) {
       await client.query('COMMIT')
       client.release()
       return res.json({ id: saleRow.id, payment_status: currentStatus })
-    }
-
-    let shippingAddress = saleRow.shipping_address
-    if (typeof shippingAddress === 'string') {
-      try {
-        shippingAddress = JSON.parse(shippingAddress)
-      } catch {
-        shippingAddress = null
-      }
-    }
-
-    let totals = saleRow.totals
-    if (typeof totals === 'string') {
-      try {
-        totals = JSON.parse(totals)
-      } catch {
-        totals = null
-      }
-    }
-
-    if (status === 'PAID') {
-      const itemsQ = await client.query(
-        'SELECT variant_id, qty, price, mrp, size, colour, image_url, ean_code FROM sale_items WHERE sale_id = $1::uuid',
-        [saleId]
-      )
-      const itemsRows = itemsQ.rows || []
-
-      if (branchId && itemsRows.length) {
-        for (const row of itemsRows) {
-          const vId = Number(row.variant_id)
-          const qty = Number(row.qty || 0)
-          if (!vId || qty <= 0) continue
-          const stockQ = await client.query(
-            'SELECT on_hand FROM branch_variant_stock WHERE branch_id = $1 AND variant_id = $2 FOR UPDATE',
-            [branchId, vId]
-          )
-          if (!stockQ.rowCount) {
-            await client.query('ROLLBACK')
-            client.release()
-            return res.status(400).json({ message: `Stock not found for variant ${vId}` })
-          }
-          const onHand = Number(stockQ.rows[0].on_hand || 0)
-          if (onHand < qty) {
-            await client.query('ROLLBACK')
-            client.release()
-            return res.status(400).json({ message: `Insufficient stock for variant ${vId}` })
-          }
-        }
-
-        for (const row of itemsRows) {
-          const vId = Number(row.variant_id)
-          const qty = Number(row.qty || 0)
-          if (!vId || qty <= 0) continue
-          await client.query(
-            'UPDATE branch_variant_stock SET on_hand = on_hand - $3 WHERE branch_id = $1 AND variant_id = $2',
-            [branchId, vId, qty]
-          )
-        }
-      }
     }
 
     const q = await client.query(
