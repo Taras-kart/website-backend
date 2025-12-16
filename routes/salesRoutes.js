@@ -25,7 +25,7 @@ router.post('/web/place', async (req, res) => {
   const client = await pool.connect()
   let saleId = null
   let saleTotals = null
-  let finalPaymentStatus = payment_status || 'COD'
+  let finalPaymentStatus = String(payment_status || 'COD').toUpperCase()
 
   try {
     await client.query('BEGIN')
@@ -103,8 +103,12 @@ router.post('/web/place', async (req, res) => {
 
     await client.query('COMMIT')
   } catch (e) {
-    await client.query('ROLLBACK')
-    client.release()
+    try {
+      await client.query('ROLLBACK')
+    } catch {}
+    try {
+      client.release()
+    } catch {}
     return res.status(500).json({ message: 'Server error' })
   } finally {
     try {
@@ -124,15 +128,34 @@ router.post('/web/place', async (req, res) => {
       totals: responseTotals,
       payment_status: finalPaymentStatus,
       pincode: shipping_address?.pincode || null,
-      items
+      items: items.map(it => ({
+        variant_id: Number(it?.variant_id ?? it?.product_id),
+        qty: Number(it?.qty ?? 1),
+        price: Number(it?.price ?? 0),
+        mrp: it?.mrp != null ? Number(it.mrp) : Number(it?.price ?? 0),
+        size: it?.size ?? it?.selected_size ?? null,
+        colour: it?.colour ?? it?.color ?? it?.selected_color ?? null,
+        image_url: it?.image_url ?? null,
+        ean_code: it?.ean_code ?? it?.barcode_value ?? null,
+        name: it?.name ?? it?.product_name ?? null
+      }))
     }
+
     try {
-      await fulfillOrderWithShiprocket(saleForShiprocket, pool)
+      const shiprocket = await fulfillOrderWithShiprocket(saleForShiprocket, pool)
+      return res.json({
+        id: saleId,
+        status: 'PLACED',
+        totals: responseTotals,
+        shiprocket
+      })
     } catch (err) {
-      console.error(
-        'Auto Shiprocket fulfill (WEB) error',
-        err?.response?.data || err?.message || err
-      )
+      return res.status(502).json({
+        id: saleId,
+        status: 'PLACED',
+        totals: responseTotals,
+        shiprocket_error: err?.response?.data || err?.message || String(err)
+      })
     }
   }
 
