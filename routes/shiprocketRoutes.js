@@ -24,10 +24,7 @@ const getSaleWithItems = async (saleId) => {
 };
 
 const getLatestShipmentForSale = async (saleId) => {
-  const { rows } = await pool.query(
-    'SELECT * FROM shipments WHERE sale_id=$1 ORDER BY created_at DESC',
-    [saleId]
-  );
+  const { rows } = await pool.query('SELECT * FROM shipments WHERE sale_id=$1 ORDER BY created_at DESC', [saleId]);
   return rows.length ? rows[0] : null;
 };
 
@@ -36,37 +33,22 @@ const resolvePinsForServiceability = async (sale) => {
 
   let pickupPin = null;
   if (branchId) {
-    const wh = await pool.query(
-      'SELECT pincode FROM shiprocket_warehouses WHERE branch_id=$1 LIMIT 1',
-      [branchId]
-    );
+    const wh = await pool.query('SELECT pincode FROM shiprocket_warehouses WHERE branch_id=$1 LIMIT 1', [branchId]);
     pickupPin = String(wh.rows[0]?.pincode || '').trim() || null;
   }
 
   if (!pickupPin && branchId) {
-    const br = await pool.query(
-      'SELECT pincode FROM branches WHERE id=$1 LIMIT 1',
-      [branchId]
-    );
+    const br = await pool.query('SELECT pincode FROM branches WHERE id=$1 LIMIT 1', [branchId]);
     pickupPin = String(br.rows[0]?.pincode || '').trim() || null;
   }
 
   if (!pickupPin) {
-    const any = await pool.query(
-      'SELECT pincode FROM branches WHERE is_active = true AND pincode IS NOT NULL LIMIT 1'
-    );
+    const any = await pool.query('SELECT pincode FROM branches WHERE is_active = true AND pincode IS NOT NULL LIMIT 1');
     pickupPin = String(any.rows[0]?.pincode || '').trim() || null;
   }
 
   const shipAddr = safeJson(sale?.shipping_address) || {};
-  const deliveryPin =
-    String(
-      sale?.shipping_pincode ||
-        shipAddr?.pincode ||
-        sale?.pincode ||
-        sale?.delivery_pincode ||
-        ''
-    ).trim() || null;
+  const deliveryPin = String(sale?.shipping_pincode || shipAddr?.pincode || sale?.pincode || sale?.delivery_pincode || '').trim() || null;
 
   return { pickupPin, deliveryPin };
 };
@@ -76,7 +58,7 @@ const serviceabilityHandler = async (req, res) => {
     const saleId = req.params.saleId || req.params.id || req.params.sale_id || null;
     if (!saleId) return res.status(400).json({ ok: false, message: 'Missing saleId' });
 
-    const { sale, items } = await getSaleWithItems(saleId);
+    const { sale } = await getSaleWithItems(saleId);
     if (!sale) return res.status(404).json({ ok: false, message: 'Sale not found' });
 
     const { pickupPin, deliveryPin } = await resolvePinsForServiceability(sale);
@@ -86,13 +68,18 @@ const serviceabilityHandler = async (req, res) => {
       return res.status(400).json({ ok: false, message: 'Invalid delivery pincode for this sale' });
     }
 
-    const sr = new Shiprocket({ pool });
-    await sr.init();
+    const payable =
+      typeof sale.totals === 'object' && sale.totals !== null ? Number(sale.totals.payable || 0) : Number(sale.total || 0);
 
-    const paymentMethod = String(sale?.payment_method || sale?.payment_type || sale?.payment_status || '').toUpperCase();
-    const cod = paymentMethod === 'COD' || paymentMethod === 'CASH_ON_DELIVERY' || paymentMethod === 'CASH';
+    const paymentStatus = String(sale.payment_status || '').toUpperCase();
+    const paymentMethod = String(sale?.payment_method || sale?.payment_type || '').toUpperCase();
+
+    const cod = (paymentMethod === 'COD' || paymentMethod === 'CASH_ON_DELIVERY' || paymentMethod === 'CASH' || paymentStatus === 'COD') && payable > 0;
 
     const weight = Number(sale?.weight || 0.5) || 0.5;
+
+    const sr = new Shiprocket({ pool });
+    await sr.init();
 
     const data = await sr.checkServiceability({
       pickup_postcode: pickupPin,
@@ -100,10 +87,6 @@ const serviceabilityHandler = async (req, res) => {
       cod,
       weight
     });
-
-    const list = Array.isArray(data?.data?.available_courier_companies)
-      ? data.data.available_courier_companies
-      : [];
 
     return res.json({
       ok: true,
@@ -136,17 +119,19 @@ router.post('/shiprocket/warehouses/import', async (req, res) => {
     const sr = new Shiprocket({ pool });
     await sr.init();
     const { data } = await sr.api('get', '/settings/company/pickup');
-    const pickups = Array.isArray(data?.data?.shipping_address)
-      ? data.data.shipping_address
-      : [];
+    const pickups = Array.isArray(data?.data?.shipping_address) ? data.data.shipping_address : [];
+
     const { rows: branches } = await pool.query(
       'SELECT id, name, address, city, state, pincode, phone FROM branches WHERE is_active = true'
     );
+
     const norm = (s) => String(s ?? '').trim().toLowerCase();
     const results = [];
+
     for (const b of branches) {
       const bpincode = String(b.pincode || '').trim();
       let best = null;
+
       if (bpincode) best = pickups.find((p) => String(p.pin_code || '').trim() === bpincode);
       if (!best && b.city) {
         const cityNorm = norm(b.city);
@@ -156,8 +141,10 @@ router.post('/shiprocket/warehouses/import', async (req, res) => {
         results.push({ branch_id: b.id, error: 'No matching pickup found in Shiprocket' });
         continue;
       }
+
       const pickupName = best.pickup_location || best.name || b.name;
       const pickupId = best.pickup_id || best.id || best.rto_address_id || 0;
+
       await pool.query(
         `INSERT INTO shiprocket_warehouses (branch_id, warehouse_id, name, pincode, city, state, address, phone)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
@@ -180,8 +167,10 @@ router.post('/shiprocket/warehouses/import', async (req, res) => {
           b.phone || ''
         ]
       );
+
       results.push({ branch_id: b.id, mapped_to: pickupName, pickup_id: pickupId });
     }
+
     res.json({ ok: true, results });
   } catch (e) {
     const msg = e.response?.data || e.message || 'import failed';
@@ -204,8 +193,8 @@ router.post('/shiprocket/warehouses/sync', async (req, res) => {
         await pool.query(
           `INSERT INTO shiprocket_warehouses (branch_id, warehouse_id, name, pincode, city, state, address, phone)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-           ON CONFLICT (branch_id) DO UPDATE 
-           SET warehouse_id=EXCLUDED.warehouse_id, name=EXCLUDED.name, pincode=EXCLUDED.pincode, 
+           ON CONFLICT (branch_id) DO UPDATE
+           SET warehouse_id=EXCLUDED.warehouse_id, name=EXCLUDED.name, pincode=EXCLUDED.pincode,
                city=EXCLUDED.city, state=EXCLUDED.state, address=EXCLUDED.address, phone=EXCLUDED.phone`,
           [b.id, data?.pickup_id || 0, pickupName, b.pincode, b.city, b.state, b.address, b.phone]
         );
@@ -251,6 +240,10 @@ router.post('/shiprocket/webhook', async (req, res) => {
   }
 });
 
+router.get('/shiprocket/serviceability/:saleId', serviceabilityHandler);
+router.get('/shiprocket/serviceability/by-sale/:saleId', serviceabilityHandler);
+router.get('/shiprocket/serviceability/sale/:saleId', serviceabilityHandler);
+
 router.get('/shiprocket/pincode', async (req, res) => {
   try {
     const deliveryPin = String(req.query.pincode || '').trim();
@@ -258,9 +251,7 @@ router.get('/shiprocket/pincode', async (req, res) => {
       return res.status(400).json({ ok: false, message: 'Invalid pincode' });
     }
 
-    const { rows } = await pool.query(
-      'SELECT pincode FROM branches WHERE is_active = true AND pincode IS NOT NULL LIMIT 1'
-    );
+    const { rows } = await pool.query('SELECT pincode FROM branches WHERE is_active = true AND pincode IS NOT NULL LIMIT 1');
     const pickupPin = String(rows[0]?.pincode || '').trim();
     if (!pickupPin) {
       return res.status(500).json({ ok: false, message: 'No pickup pincode configured' });
@@ -276,10 +267,7 @@ router.get('/shiprocket/pincode', async (req, res) => {
       weight: 0.5
     });
 
-    const list = Array.isArray(data?.data?.available_courier_companies)
-      ? data.data.available_courier_companies
-      : [];
-
+    const list = Array.isArray(data?.data?.available_courier_companies) ? data.data.available_courier_companies : [];
     const serviceable = list.length > 0;
 
     return res.json({
@@ -294,121 +282,11 @@ router.get('/shiprocket/pincode', async (req, res) => {
   }
 });
 
-router.get('/shiprocket/label/:saleId', async (req, res) => {
-  try {
-    const saleId = req.params.saleId;
-    const { rows } = await pool.query(
-      'SELECT * FROM shipments WHERE sale_id=$1 ORDER BY created_at DESC',
-      [saleId]
-    );
-    if (!rows.length) {
-      return res.status(404).json({ ok: false, message: 'No shipments found for this sale' });
-    }
-    const existingWithLabel = rows.find((r) => r.label_url);
-    if (existingWithLabel && existingWithLabel.label_url) {
-      return res.redirect(existingWithLabel.label_url);
-    }
-    const shipmentIds = rows
-      .map((r) => r.shiprocket_shipment_id)
-      .filter((v) => v != null);
-    if (!shipmentIds.length) {
-      return res.status(404).json({ ok: false, message: 'No Shiprocket shipment ids found' });
-    }
-    const sr = new Shiprocket({ pool });
-    await sr.init();
-    const result = await sr.assignAWBAndLabel({ shipment_id: shipmentIds });
-    const labelUrl =
-      result?.label?.label_url ||
-      result?.label_url ||
-      null;
-    if (!labelUrl) {
-      return res.status(500).json({ ok: false, message: 'Unable to generate label' });
-    }
-    return res.redirect(labelUrl);
-  } catch (e) {
-    const msg = e.response?.data || e.message || 'Failed to fetch label';
-    return res.status(500).json({ ok: false, message: msg });
-  }
-});
-
-router.get('/shiprocket/invoice/:saleId', async (req, res) => {
-  try {
-    const saleId = req.params.saleId;
-    const { rows } = await pool.query(
-      'SELECT * FROM shipments WHERE sale_id=$1 ORDER BY created_at ASC',
-      [saleId]
-    );
-    if (!rows.length) {
-      return res.status(404).json({ ok: false, message: 'No shipments found for this sale' });
-    }
-    const orderIds = Array.from(
-      new Set(
-        rows
-          .map((r) => r.shiprocket_order_id)
-          .filter((v) => v != null)
-      )
-    );
-    if (!orderIds.length) {
-      return res.status(404).json({ ok: false, message: 'No Shiprocket order ids found' });
-    }
-    const sr = new Shiprocket({ pool });
-    await sr.init();
-    const { data } = await sr.api('post', '/orders/print/invoice', { ids: orderIds });
-    const invoiceUrl =
-      data?.invoice_url ||
-      data?.data?.invoice_url ||
-      null;
-    if (!invoiceUrl) {
-      return res.status(500).json({ ok: false, message: 'Unable to generate invoice' });
-    }
-    return res.redirect(invoiceUrl);
-  } catch (e) {
-    const msg = e.response?.data || e.message || 'Failed to fetch invoice';
-    return res.status(500).json({ ok: false, message: msg });
-  }
-});
-
-router.get('/shiprocket/manifest/:saleId', async (req, res) => {
-  try {
-    const saleId = req.params.saleId;
-    const { rows } = await pool.query(
-      'SELECT * FROM shipments WHERE sale_id=$1 ORDER BY created_at ASC',
-      [saleId]
-    );
-    if (!rows.length) {
-      return res.status(404).json({ ok: false, message: 'No shipments found for this sale' });
-    }
-    const shipmentIds = rows
-      .map((r) => r.shiprocket_shipment_id)
-      .filter((v) => v != null);
-    if (!shipmentIds.length) {
-      return res.status(404).json({ ok: false, message: 'No Shiprocket shipment ids found' });
-    }
-    const sr = new Shiprocket({ pool });
-    await sr.init();
-    const data = await sr.generateManifest({ shipment_ids: shipmentIds });
-    const manifestUrl =
-      data?.manifest_url ||
-      data?.data?.manifest_url ||
-      null;
-    if (!manifestUrl) {
-      return res.status(500).json({ ok: false, message: 'Unable to generate manifest' });
-    }
-    return res.redirect(manifestUrl);
-  } catch (e) {
-    const msg = e.response?.data || e.message || 'Failed to fetch manifest';
-    return res.status(500).json({ ok: false, message: msg });
-  }
-});
-
-router.get('/shiprocket/serviceability/:saleId', serviceabilityHandler);
-router.get('/shiprocket/serviceability/by-sale/:saleId', serviceabilityHandler);
-router.get('/shiprocket/serviceability/sale/:saleId', serviceabilityHandler);
-
 router.post('/shiprocket/assign-courier', async (req, res) => {
   try {
     const saleId = req.body?.sale_id || null;
     const courierCompanyId = Number(req.body?.courier_company_id || 0) || 0;
+
     if (!saleId) return res.status(400).json({ ok: false, message: 'Missing sale_id' });
     if (!courierCompanyId) return res.status(400).json({ ok: false, message: 'Missing courier_company_id' });
 
@@ -431,14 +309,18 @@ router.post('/shiprocket/assign-courier', async (req, res) => {
     await sr.init();
 
     const shiprocketShipmentId = Number(shipment.shiprocket_shipment_id);
-    const { data: awbData } = await sr.api('post', '/courier/assign/awb', {
+
+    const awbResp = await sr.api('post', '/courier/assign/awb', {
       shipment_id: [shiprocketShipmentId],
       courier_company_id: courierCompanyId
     });
 
-    const { data: labelData } = await sr.api('post', '/courier/generate/label', {
+    const labelResp = await sr.api('post', '/courier/generate/label', {
       shipment_id: [shiprocketShipmentId]
     });
+
+    const awbData = awbResp?.data;
+    const labelData = labelResp?.data;
 
     const awb =
       awbData?.awb_code ||
@@ -447,15 +329,9 @@ router.post('/shiprocket/assign-courier', async (req, res) => {
       awbData?.awb ||
       null;
 
-    const courierName =
-      awbData?.courier_name ||
-      awbData?.data?.courier_name ||
-      null;
+    const courierName = awbData?.courier_name || awbData?.data?.courier_name || null;
 
-    const labelUrl =
-      labelData?.label_url ||
-      labelData?.data?.label_url ||
-      null;
+    const labelUrl = labelData?.label_url || labelData?.data?.label_url || null;
 
     await pool.query(
       `UPDATE shipments
@@ -478,7 +354,7 @@ router.post('/shiprocket/assign-courier', async (req, res) => {
       courier_company_id: courierCompanyId,
       courier_name: courierName,
       label_url: labelUrl,
-      raw: { awb: awbData, label: labelData }
+      raw: { awb: awbResp?.data, label: labelResp?.data }
     });
   } catch (e) {
     const msg = e.response?.data || e.message || 'Failed to assign courier / generate AWB';
@@ -488,14 +364,8 @@ router.post('/shiprocket/assign-courier', async (req, res) => {
 
 router.post('/shiprocket/assign-awb', async (req, res) => {
   try {
-    const saleId = req.body?.sale_id || null;
-    const courierCompanyId = Number(req.body?.courier_company_id || 0) || 0;
-    if (!saleId) return res.status(400).json({ ok: false, message: 'Missing sale_id' });
-    if (!courierCompanyId) return res.status(400).json({ ok: false, message: 'Missing courier_company_id' });
-
-    req.body.sale_id = saleId;
-    req.body.courier_company_id = courierCompanyId;
-
+    req.url = '/shiprocket/assign-courier';
+    req.method = 'POST';
     return router.handle(req, res, () => {});
   } catch (e) {
     const msg = e.response?.data || e.message || 'Failed to assign AWB';
@@ -507,11 +377,9 @@ router.post('/shiprocket/assign-courier/by-sale/:saleId', async (req, res) => {
   req.body = req.body || {};
   req.body.sale_id = req.params.saleId;
   req.body.courier_company_id = req.body.courier_company_id || req.body.courierCompanyId;
-  return router.handle(
-    { ...req, url: '/shiprocket/assign-courier', method: 'POST' },
-    res,
-    () => {}
-  );
+  req.url = '/shiprocket/assign-courier';
+  req.method = 'POST';
+  return router.handle(req, res, () => {});
 });
 
 router.post('/shiprocket/pickup', async (req, res) => {
@@ -525,8 +393,8 @@ router.post('/shiprocket/pickup', async (req, res) => {
 
     if (!ids.length) return res.status(400).json({ ok: false, message: 'Missing shipment_id' });
 
-    const data = await sr.requestPickup({ shipment_id: ids });
-    return res.json({ ok: true, data });
+    const out = await sr.requestPickup({ shipment_id: ids });
+    return res.json({ ok: true, data: out?.data ?? out });
   } catch (e) {
     const msg = e.response?.data || e.message || 'Failed to request pickup';
     return res.status(500).json({ ok: false, message: msg });
@@ -536,6 +404,7 @@ router.post('/shiprocket/pickup', async (req, res) => {
 router.post('/shiprocket/pickup/by-sale/:saleId', async (req, res) => {
   try {
     const saleId = req.params.saleId;
+
     let shipment = await getLatestShipmentForSale(saleId);
     if (!shipment || !shipment.shiprocket_shipment_id) {
       const { sale, items } = await getSaleWithItems(saleId);
@@ -552,10 +421,84 @@ router.post('/shiprocket/pickup/by-sale/:saleId', async (req, res) => {
     const sr = new Shiprocket({ pool });
     await sr.init();
 
-    const data = await sr.requestPickup({ shipment_id: [Number(shipment.shiprocket_shipment_id)] });
-    return res.json({ ok: true, data });
+    const out = await sr.requestPickup({ shipment_id: [Number(shipment.shiprocket_shipment_id)] });
+    return res.json({ ok: true, data: out?.data ?? out });
   } catch (e) {
     const msg = e.response?.data || e.message || 'Failed to request pickup';
+    return res.status(500).json({ ok: false, message: msg });
+  }
+});
+
+router.get('/shiprocket/label/:saleId', async (req, res) => {
+  try {
+    const saleId = req.params.saleId;
+    const { rows } = await pool.query('SELECT * FROM shipments WHERE sale_id=$1 ORDER BY created_at DESC', [saleId]);
+    if (!rows.length) return res.status(404).json({ ok: false, message: 'No shipments found for this sale' });
+
+    const existingWithLabel = rows.find((r) => r.label_url);
+    if (existingWithLabel?.label_url) return res.redirect(existingWithLabel.label_url);
+
+    const shipmentIds = rows.map((r) => r.shiprocket_shipment_id).filter((v) => v != null);
+    if (!shipmentIds.length) return res.status(404).json({ ok: false, message: 'No Shiprocket shipment ids found' });
+
+    const sr = new Shiprocket({ pool });
+    await sr.init();
+
+    const result = await sr.assignAWBAndLabel({ shipment_id: shipmentIds });
+    const labelUrl = result?.label?.label_url || result?.label_url || null;
+    if (!labelUrl) return res.status(500).json({ ok: false, message: 'Unable to generate label' });
+
+    return res.redirect(labelUrl);
+  } catch (e) {
+    const msg = e.response?.data || e.message || 'Failed to fetch label';
+    return res.status(500).json({ ok: false, message: msg });
+  }
+});
+
+router.get('/shiprocket/invoice/:saleId', async (req, res) => {
+  try {
+    const saleId = req.params.saleId;
+    const { rows } = await pool.query('SELECT * FROM shipments WHERE sale_id=$1 ORDER BY created_at ASC', [saleId]);
+    if (!rows.length) return res.status(404).json({ ok: false, message: 'No shipments found for this sale' });
+
+    const orderIds = Array.from(new Set(rows.map((r) => r.shiprocket_order_id).filter((v) => v != null)));
+    if (!orderIds.length) return res.status(404).json({ ok: false, message: 'No Shiprocket order ids found' });
+
+    const sr = new Shiprocket({ pool });
+    await sr.init();
+
+    const { data } = await sr.api('post', '/orders/print/invoice', { ids: orderIds });
+    const invoiceUrl = data?.invoice_url || data?.data?.invoice_url || null;
+    if (!invoiceUrl) return res.status(500).json({ ok: false, message: 'Unable to generate invoice' });
+
+    return res.redirect(invoiceUrl);
+  } catch (e) {
+    const msg = e.response?.data || e.message || 'Failed to fetch invoice';
+    return res.status(500).json({ ok: false, message: msg });
+  }
+});
+
+router.get('/shiprocket/manifest/:saleId', async (req, res) => {
+  try {
+    const saleId = req.params.saleId;
+    const { rows } = await pool.query('SELECT * FROM shipments WHERE sale_id=$1 ORDER BY created_at ASC', [saleId]);
+    if (!rows.length) return res.status(404).json({ ok: false, message: 'No shipments found for this sale' });
+
+    const shipmentIds = rows.map((r) => r.shiprocket_shipment_id).filter((v) => v != null);
+    if (!shipmentIds.length) return res.status(404).json({ ok: false, message: 'No Shiprocket shipment ids found' });
+
+    const sr = new Shiprocket({ pool });
+    await sr.init();
+
+    const out = await sr.generateManifest({ shipment_ids: shipmentIds });
+    const data = out?.data ?? out;
+
+    const manifestUrl = data?.manifest_url || data?.data?.manifest_url || null;
+    if (!manifestUrl) return res.status(500).json({ ok: false, message: 'Unable to generate manifest' });
+
+    return res.redirect(manifestUrl);
+  } catch (e) {
+    const msg = e.response?.data || e.message || 'Failed to fetch manifest';
     return res.status(500).json({ ok: false, message: msg });
   }
 });
