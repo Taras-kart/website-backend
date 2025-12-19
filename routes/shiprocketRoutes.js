@@ -22,9 +22,7 @@ router.post('/shiprocket/warehouses/import', async (req, res) => {
     await sr.init();
     const { data } = await sr.api('get', '/settings/company/pickup');
     const pickups = Array.isArray(data?.data?.shipping_address) ? data.data.shipping_address : [];
-    const { rows: branches } = await pool.query(
-      'SELECT id, name, address, city, state, pincode, phone FROM branches WHERE is_active = true'
-    );
+    const { rows: branches } = await pool.query('SELECT id, name, address, city, state, pincode, phone FROM branches WHERE is_active = true');
     const norm = (s) => String(s ?? '').trim().toLowerCase();
     const results = [];
     for (const b of branches) {
@@ -76,9 +74,7 @@ router.post('/shiprocket/warehouses/sync', async (req, res) => {
   try {
     const sr = new Shiprocket({ pool });
     await sr.init();
-    const { rows: branches } = await pool.query(
-      'SELECT id, name, address, city, state, pincode, phone, email FROM branches WHERE is_active = true'
-    );
+    const { rows: branches } = await pool.query('SELECT id, name, address, city, state, pincode, phone, email FROM branches WHERE is_active = true');
     const results = [];
     for (const b of branches) {
       try {
@@ -183,6 +179,13 @@ async function getShipmentsForSale(saleId) {
   return { rows, shipmentIds };
 }
 
+async function getLatestShiprocketOrderIdForSale(saleId) {
+  const { rows } = await pool.query('SELECT shiprocket_order_id FROM shipments WHERE sale_id=$1 AND shiprocket_order_id IS NOT NULL ORDER BY created_at DESC LIMIT 1', [saleId]);
+  const orderId = rows?.[0]?.shiprocket_order_id || null;
+  if (!orderId) return { error: { code: 404, body: { ok: false, message: 'Shiprocket order id not found for this sale' } } };
+  return { orderId };
+}
+
 router.get('/shiprocket/serviceability/:saleId', async (req, res) => {
   try {
     const out = await computeServiceabilityForSaleId(req.params.saleId);
@@ -238,7 +241,7 @@ router.get('/shiprocket/pincode', async (req, res) => {
     const list = Array.isArray(data?.data?.available_courier_companies) ? data.data.available_courier_companies : [];
     const serviceable = list.length > 0;
 
-    res.json({
+    return res.json({
       ok: true,
       serviceable,
       est_delivery: list[0]?.etd || null,
@@ -246,20 +249,7 @@ router.get('/shiprocket/pincode', async (req, res) => {
     });
   } catch (e) {
     const msg = e.response?.data || e.message || 'Failed to check pincode';
-    res.status(500).json({ ok: false, message: msg });
-  }
-});
-
-router.get('/shiprocket/wallet-balance', async (req, res) => {
-  try {
-    const sr = new Shiprocket({ pool });
-    await sr.init();
-    const { data } = await sr.api('get', '/account/details/wallet-balance');
-    const balance = data?.data?.balance ?? data?.balance ?? null;
-    res.json({ ok: true, balance, raw: data });
-  } catch (e) {
-    const msg = e.response?.data || e.message || 'Failed to fetch wallet balance';
-    res.status(500).json({ ok: false, message: msg });
+    return res.status(500).json({ ok: false, message: msg });
   }
 });
 
@@ -279,45 +269,22 @@ router.post('/shiprocket/assign-courier/by-sale/:saleId', async (req, res) => {
       courier_company_id
     });
 
-    const statusCode = data?.status_code ?? null;
-    const assignOk = Number(data?.awb_assign_status || 0) === 1;
-    if (statusCode && statusCode !== 200) {
-      return res.status(400).json({
-        ok: false,
-        message: data?.message || 'Shiprocket rejected AWB assignment',
-        status_code: statusCode,
-        data
-      });
-    }
-    if (!assignOk) {
-      return res.status(400).json({
-        ok: false,
-        message: data?.message || data?.response?.data?.awb_assign_error || 'AWB assignment failed',
-        status_code: statusCode || 400,
-        data
-      });
+    const statusCode = Number(data?.status_code || 0);
+    const awbAssignStatus = data?.awb_assign_status != null ? Number(data.awb_assign_status) : null;
+    const message = data?.message || '';
+    const srErr = data?.response?.data?.awb_assign_error || '';
+
+    const walletLow = statusCode === 350 || /recharge/i.test(message) || /recharge/i.test(srErr);
+    const success = awbAssignStatus === 1 || statusCode === 200;
+
+    if (walletLow || !success) {
+      return res.status(400).json({ ok: false, message: srErr || message || 'Unable to assign courier / generate AWB', data });
     }
 
-    res.json({ ok: true, data });
+    return res.json({ ok: true, data });
   } catch (e) {
     const msg = e.response?.data || e.message || 'Failed to assign courier';
-    res.status(500).json({ ok: false, message: msg });
-  }
-});
-
-router.post('/shiprocket/assign-awb/by-sale/:saleId', async (req, res) => {
-  try {
-    const out = await getShipmentsForSale(req.params.saleId);
-    if (out.error) return res.status(out.error.code).json(out.error.body);
-
-    const sr = new Shiprocket({ pool });
-    await sr.init();
-
-    const result = await sr.assignAWBAndLabel({ shipment_id: out.shipmentIds });
-    res.json({ ok: true, result });
-  } catch (e) {
-    const msg = e.response?.data || e.message || 'Failed to assign AWB';
-    res.status(500).json({ ok: false, message: msg });
+    return res.status(500).json({ ok: false, message: msg });
   }
 });
 
@@ -325,6 +292,7 @@ router.post('/shiprocket/assign-courier', async (req, res) => {
   try {
     const saleId = String(req.body?.saleId || req.body?.sale_id || '').trim();
     const courier_company_id = Number(req.body?.courier_company_id || 0);
+
     if (!saleId) return res.status(400).json({ ok: false, message: 'saleId is required' });
     if (!courier_company_id) return res.status(400).json({ ok: false, message: 'courier_company_id is required' });
 
@@ -339,25 +307,49 @@ router.post('/shiprocket/assign-courier', async (req, res) => {
       courier_company_id
     });
 
-    const statusCode = data?.status_code ?? null;
-    const assignOk = Number(data?.awb_assign_status || 0) === 1;
+    const statusCode = Number(data?.status_code || 0);
+    const awbAssignStatus = data?.awb_assign_status != null ? Number(data.awb_assign_status) : null;
+    const message = data?.message || '';
+    const srErr = data?.response?.data?.awb_assign_error || '';
 
-    if (statusCode && statusCode !== 200) {
-      const msg = data?.message || data?.response?.data?.awb_assign_error || 'Shiprocket rejected AWB assignment';
-      const needsWallet = statusCode === 350 || /wallet/i.test(String(msg));
-      return res.status(400).json({ ok: false, message: msg, status_code: statusCode, requires_wallet_recharge: needsWallet, data });
+    const walletLow = statusCode === 350 || /recharge/i.test(message) || /recharge/i.test(srErr);
+    const success = awbAssignStatus === 1 || statusCode === 200;
+
+    if (walletLow || !success) {
+      return res.status(400).json({ ok: false, message: srErr || message || 'Unable to assign courier / generate AWB', data });
     }
 
-    if (!assignOk) {
-      const msg = data?.message || data?.response?.data?.awb_assign_error || 'AWB assignment failed';
-      const needsWallet = statusCode === 350 || /wallet/i.test(String(msg));
-      return res.status(400).json({ ok: false, message: msg, status_code: statusCode || 400, requires_wallet_recharge: needsWallet, data });
-    }
-
-    res.json({ ok: true, data });
+    return res.json({ ok: true, data });
   } catch (e) {
     const msg = e.response?.data || e.message || 'Failed to assign courier';
-    res.status(500).json({ ok: false, message: msg });
+    return res.status(500).json({ ok: false, message: msg });
+  }
+});
+
+router.post('/shiprocket/assign-awb/by-sale/:saleId', async (req, res) => {
+  try {
+    const out = await getShipmentsForSale(req.params.saleId);
+    if (out.error) return res.status(out.error.code).json(out.error.body);
+
+    const sr = new Shiprocket({ pool });
+    await sr.init();
+
+    const result = await sr.assignAWBAndLabel({ shipment_id: out.shipmentIds });
+
+    const statusCode = Number(result?.status_code || result?.data?.status_code || 0);
+    const message = result?.message || result?.data?.message || '';
+    const srErr = result?.response?.data?.awb_assign_error || result?.data?.response?.data?.awb_assign_error || '';
+
+    const walletLow = statusCode === 350 || /recharge/i.test(message) || /recharge/i.test(srErr);
+
+    if (walletLow || statusCode !== 200) {
+      return res.status(400).json({ ok: false, message: srErr || message || 'Unable to generate AWB', result });
+    }
+
+    return res.json({ ok: true, result });
+  } catch (e) {
+    const msg = e.response?.data || e.message || 'Failed to assign AWB';
+    return res.status(500).json({ ok: false, message: msg });
   }
 });
 
@@ -373,49 +365,39 @@ router.post('/shiprocket/assign-awb', async (req, res) => {
     await sr.init();
 
     const result = await sr.assignAWBAndLabel({ shipment_id: out.shipmentIds });
-    res.json({ ok: true, result });
+
+    const statusCode = Number(result?.status_code || result?.data?.status_code || 0);
+    const message = result?.message || result?.data?.message || '';
+    const srErr = result?.response?.data?.awb_assign_error || result?.data?.response?.data?.awb_assign_error || '';
+
+    const walletLow = statusCode === 350 || /recharge/i.test(message) || /recharge/i.test(srErr);
+
+    if (walletLow || statusCode !== 200) {
+      return res.status(400).json({ ok: false, message: srErr || message || 'Unable to generate AWB', result });
+    }
+
+    return res.json({ ok: true, result });
   } catch (e) {
     const msg = e.response?.data || e.message || 'Failed to assign AWB';
-    res.status(500).json({ ok: false, message: msg });
+    return res.status(500).json({ ok: false, message: msg });
   }
 });
 
-router.post('/shiprocket/pickup', async (req, res) => {
+router.get('/shiprocket/tracking/by-sale/:saleId', async (req, res) => {
   try {
-    const shipment_id = Array.isArray(req.body?.shipment_id) ? req.body.shipment_id : [];
-    if (!shipment_id.length) return res.status(400).json({ ok: false, message: 'shipment_id is required' });
+    const out = await getLatestShiprocketOrderIdForSale(req.params.saleId);
+    if (out.error) return res.status(out.error.code).json(out.error.body);
 
     const sr = new Shiprocket({ pool });
     await sr.init();
 
-    const { data } = await sr.api('post', '/courier/generate/pickup', { shipment_id });
-    const status = data?.status_code ?? null;
-    if (status && status !== 200) return res.status(400).json({ ok: false, message: data?.message || 'Pickup request failed', data });
-    res.json({ ok: true, data });
-  } catch (e) {
-    const msg = e.response?.data || e.message || 'Failed to create pickup request';
-    res.status(500).json({ ok: false, message: msg });
-  }
-});
-
-router.get('/shiprocket/track/by-sale/:saleId', async (req, res) => {
-  try {
-    const saleId = req.params.saleId;
-    const { rows } = await pool.query('SELECT * FROM shipments WHERE sale_id=$1 ORDER BY created_at DESC', [saleId]);
-    if (!rows.length) return res.status(404).json({ ok: false, message: 'No shipments found for this sale' });
-
-    const latest = rows[0];
-    const orderId = latest?.shiprocket_order_id || latest?.order_id || null;
-    if (!orderId) return res.status(404).json({ ok: false, message: 'No Shiprocket order id found' });
-
-    const sr = new Shiprocket({ pool });
-    await sr.init();
-
+    const orderId = out.orderId;
     const { data } = await sr.api('get', `/courier/track?order_id=${encodeURIComponent(String(orderId))}`);
-    res.json({ ok: true, order_id: orderId, data });
+
+    return res.json({ ok: true, data });
   } catch (e) {
     const msg = e.response?.data || e.message || 'Failed to fetch tracking';
-    res.status(500).json({ ok: false, message: msg });
+    return res.status(500).json({ ok: false, message: msg });
   }
 });
 
@@ -426,7 +408,7 @@ router.get('/shiprocket/label/:saleId', async (req, res) => {
     if (!rows.length) return res.status(404).json({ ok: false, message: 'No shipments found for this sale' });
 
     const existingWithLabel = rows.find((r) => r.label_url);
-    if (existingWithLabel?.label_url) return res.redirect(existingWithLabel.label_url);
+    if (existingWithLabel && existingWithLabel.label_url) return res.redirect(existingWithLabel.label_url);
 
     const shipmentIds = rows.map((r) => r.shiprocket_shipment_id).filter((v) => v != null);
     if (!shipmentIds.length) return res.status(404).json({ ok: false, message: 'No Shiprocket shipment ids found' });
@@ -434,14 +416,15 @@ router.get('/shiprocket/label/:saleId', async (req, res) => {
     const sr = new Shiprocket({ pool });
     await sr.init();
 
-    const { data } = await sr.api('post', '/courier/generate/label', { shipment_id: shipmentIds });
-    const labelUrl = data?.label_url || data?.data?.label_url || null;
+    const result = await sr.assignAWBAndLabel({ shipment_id: shipmentIds });
+    const labelUrl = result?.label?.label_url || result?.label_url || null;
+
     if (!labelUrl) return res.status(500).json({ ok: false, message: 'Unable to generate label' });
 
-    res.redirect(labelUrl);
+    return res.redirect(labelUrl);
   } catch (e) {
     const msg = e.response?.data || e.message || 'Failed to fetch label';
-    res.status(500).json({ ok: false, message: msg });
+    return res.status(500).json({ ok: false, message: msg });
   }
 });
 
@@ -459,12 +442,13 @@ router.get('/shiprocket/invoice/:saleId', async (req, res) => {
 
     const { data } = await sr.api('post', '/orders/print/invoice', { ids: orderIds });
     const invoiceUrl = data?.invoice_url || data?.data?.invoice_url || null;
+
     if (!invoiceUrl) return res.status(500).json({ ok: false, message: 'Unable to generate invoice' });
 
-    res.redirect(invoiceUrl);
+    return res.redirect(invoiceUrl);
   } catch (e) {
     const msg = e.response?.data || e.message || 'Failed to fetch invoice';
-    res.status(500).json({ ok: false, message: msg });
+    return res.status(500).json({ ok: false, message: msg });
   }
 });
 
@@ -480,14 +464,15 @@ router.get('/shiprocket/manifest/:saleId', async (req, res) => {
     const sr = new Shiprocket({ pool });
     await sr.init();
 
-    const { data } = await sr.api('post', '/manifests/generate', { shipment_id: shipmentIds });
+    const data = await sr.generateManifest({ shipment_ids: shipmentIds });
     const manifestUrl = data?.manifest_url || data?.data?.manifest_url || null;
+
     if (!manifestUrl) return res.status(500).json({ ok: false, message: 'Unable to generate manifest' });
 
-    res.redirect(manifestUrl);
+    return res.redirect(manifestUrl);
   } catch (e) {
     const msg = e.response?.data || e.message || 'Failed to fetch manifest';
-    res.status(500).json({ ok: false, message: msg });
+    return res.status(500).json({ ok: false, message: msg });
   }
 });
 
