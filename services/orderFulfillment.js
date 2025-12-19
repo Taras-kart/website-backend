@@ -1,6 +1,13 @@
 const { randomUUID } = require('crypto')
 const Shiprocket = require('./shiprocketService')
 
+const FORCE_BRANCH_ID = (() => {
+  const v = process.env.FORCE_BRANCH_ID
+  if (v == null || v === '') return null
+  const n = parseInt(String(v), 10)
+  return Number.isFinite(n) && n > 0 ? n : null
+})()
+
 function haversineKm(a, b) {
   const toRad = d => (d * Math.PI) / 180
   const R = 6371
@@ -8,18 +15,13 @@ function haversineKm(a, b) {
   const dLon = toRad((b.lng || 0) - (a.lng || 0))
   const lat1 = toRad(a.lat || 0)
   const lat2 = toRad(b.lat || 0)
-  const h =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2
   return 2 * R * Math.asin(Math.sqrt(h))
 }
 
 async function customerLocFromSale(sale, db) {
   if (sale.shipping_address?.lat && sale.shipping_address?.lng) {
-    return {
-      lat: Number(sale.shipping_address.lat),
-      lng: Number(sale.shipping_address.lng)
-    }
+    return { lat: Number(sale.shipping_address.lat), lng: Number(sale.shipping_address.lng) }
   }
   const pc = sale.shipping_address?.pincode || sale.pincode || null
   if (!pc) return { lat: null, lng: null }
@@ -36,9 +38,7 @@ async function candidateBranches(db, variantId, qty) {
        b.id,
        b.latitude::float AS lat,
        b.longitude::float AS lng,
-       b.pincode,
-       s.on_hand::int AS on_hand,
-       s.reserved::int AS reserved
+       b.pincode
      FROM branch_variant_stock s
      JOIN branches b ON b.id = s.branch_id
      WHERE s.variant_id=$1
@@ -52,6 +52,11 @@ async function candidateBranches(db, variantId, qty) {
 function pickBestBranch(rows, sale, customerLoc) {
   if (!rows.length) return null
 
+  if (FORCE_BRANCH_ID != null) {
+    const forced = rows.find(r => Number(r.id) === Number(FORCE_BRANCH_ID))
+    if (forced) return forced.id
+  }
+
   if (sale.branch_id) {
     const exact = rows.find(r => Number(r.id) === Number(sale.branch_id))
     if (exact) return exact.id
@@ -63,10 +68,7 @@ function pickBestBranch(rows, sale, customerLoc) {
 
   if (customerLoc.lat != null && customerLoc.lng != null) {
     const sorted = poolRows
-      .map(r => ({
-        r,
-        d: haversineKm({ lat: r.lat, lng: r.lng }, customerLoc)
-      }))
+      .map(r => ({ r, d: haversineKm({ lat: r.lat, lng: r.lng }, customerLoc) }))
       .sort((a, b) => a.d - b.d)
     return sorted[0].r.id
   }
@@ -74,7 +76,7 @@ function pickBestBranch(rows, sale, customerLoc) {
   return poolRows[0].id
 }
 
-async function planShipmentsForOrderAndDecrementStock(sale, pool) {
+async function planShipmentsAndDecrementStock(sale, pool) {
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
@@ -82,10 +84,10 @@ async function planShipmentsForOrderAndDecrementStock(sale, pool) {
     const loc = await customerLocFromSale(sale, client)
     const groups = {}
 
-    for (const it of sale.items) {
-      const variantId = Number(it.variant_id ?? it.product_id)
-      const qty = Number(it.qty ?? 1)
-      if (!variantId || qty <= 0) throw new Error(`Invalid item for variant ${it.variant_id}`)
+    for (const it of sale.items || []) {
+      const variantId = Number(it?.variant_id ?? it?.product_id)
+      const qty = Number(it?.qty ?? 1)
+      if (!variantId || qty <= 0) throw new Error(`Invalid item for variant ${it?.variant_id ?? it?.product_id}`)
 
       const rows = await candidateBranches(client, variantId, qty)
       const branchId = pickBestBranch(rows, sale, loc)
@@ -98,6 +100,7 @@ async function planShipmentsForOrderAndDecrementStock(sale, pool) {
          FOR UPDATE`,
         [branchId, variantId]
       )
+
       if (!stockQ.rowCount) throw new Error(`Stock row missing for variant ${variantId} in branch ${branchId}`)
 
       const onHand = Number(stockQ.rows[0].on_hand || 0)
@@ -115,13 +118,13 @@ async function planShipmentsForOrderAndDecrementStock(sale, pool) {
       groups[branchId].push({
         variant_id: variantId,
         qty,
-        price: Number(it.price ?? 0),
-        mrp: it.mrp != null ? Number(it.mrp) : null,
-        size: it.size ?? it.selected_size ?? null,
-        colour: it.colour ?? it.color ?? it.selected_color ?? null,
-        image_url: it.image_url ?? null,
-        ean_code: it.ean_code ?? it.barcode_value ?? null,
-        name: it.name ?? it.product_name ?? null
+        price: Number(it?.price ?? 0),
+        mrp: it?.mrp != null ? Number(it.mrp) : null,
+        size: it?.size ?? it?.selected_size ?? null,
+        colour: it?.colour ?? it?.color ?? it?.selected_color ?? null,
+        image_url: it?.image_url ?? null,
+        ean_code: it?.ean_code ?? it?.barcode_value ?? null,
+        name: it?.name ?? it?.product_name ?? null
       })
     }
 
@@ -147,7 +150,7 @@ async function fulfillOrderWithShiprocket(sale, pool) {
   const sr = new Shiprocket({ pool })
   await sr.init()
 
-  const groups = await planShipmentsForOrderAndDecrementStock(sale, pool)
+  const groups = await planShipmentsAndDecrementStock(sale, pool)
   const created = []
   const manifestShipmentIds = []
 
@@ -160,23 +163,15 @@ async function fulfillOrderWithShiprocket(sale, pool) {
     String(sale.payment_status || '').toUpperCase() === 'COD' && payable > 0 ? 'COD' : 'Prepaid'
 
   for (const group of groups) {
-    const wh = (
-      await pool.query('SELECT * FROM shiprocket_warehouses WHERE branch_id=$1', [group.branch_id])
-    ).rows[0]
-
-    if (!wh) {
-      throw new Error(`No pickup mapped for branch ${group.branch_id}`)
-    }
+    const wh = (await pool.query('SELECT * FROM shiprocket_warehouses WHERE branch_id=$1', [group.branch_id])).rows[0]
+    if (!wh) throw new Error(`No pickup mapped for branch ${group.branch_id}`)
 
     const channelOrderId = `${sale.id}-${group.branch_id}`
 
     const data = await sr.createOrderShipment({
       channel_order_id: channelOrderId,
       pickup_location: wh.name,
-      order: {
-        items: group.items,
-        payment_method: paymentMethodForShiprocket
-      },
+      order: { items: group.items, payment_method: paymentMethodForShiprocket },
       customer: {
         name: sale.customer_name || 'Customer',
         email: sale.customer_email || null,
@@ -232,12 +227,7 @@ async function fulfillOrderWithShiprocket(sale, pool) {
       ]
     )
 
-    created.push({
-      branch_id: group.branch_id,
-      shipment_id: shipmentId,
-      awb,
-      label_url: labelUrl
-    })
+    created.push({ branch_id: group.branch_id, shipment_id: shipmentId, awb, label_url: labelUrl })
   }
 
   if (manifestShipmentIds.length) {
