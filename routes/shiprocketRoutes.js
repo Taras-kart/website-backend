@@ -312,7 +312,7 @@ router.post('/shiprocket/assign-awb/by-sale/:saleId', async (req, res) => {
 
 router.post('/shiprocket/assign-courier', async (req, res) => {
   try {
-    const saleId = String(req.body?.saleId || '').trim();
+    const saleId = String(req.body?.saleId || req.body?.sale_id || req.body?.saleId || '').trim();
     const courier_company_id = Number(req.body?.courier_company_id || 0);
     if (!saleId) return res.status(400).json({ ok: false, message: 'saleId is required' });
     if (!courier_company_id) return res.status(400).json({ ok: false, message: 'courier_company_id is required' });
@@ -337,7 +337,7 @@ router.post('/shiprocket/assign-courier', async (req, res) => {
 
 router.post('/shiprocket/assign-awb', async (req, res) => {
   try {
-    const saleId = String(req.body?.saleId || '').trim();
+    const saleId = String(req.body?.saleId || req.body?.sale_id || req.body?.saleId || '').trim();
     if (!saleId) return res.status(400).json({ ok: false, message: 'saleId is required' });
 
     const out = await getShipmentsForSale(saleId);
