@@ -60,12 +60,12 @@ function cleanText(v) {
 
 function toNumOrNull(v) {
   if (v === '' || v == null) return null;
-  const n = parseFloat(String(v).toString().replace(/[, ]+/g, ''));
+  const n = parseFloat(String(v).toString().replace(/[₹, ]+/g, ''));
   return Number.isFinite(n) ? n : null;
 }
 
 function toIntOrZero(v) {
-  const n = parseInt(String(v).toString().replace(/[, ]+/g, ''), 10);
+  const n = parseInt(String(v).toString().replace(/[₹, ]+/g, ''), 10);
   return Number.isFinite(n) ? n : 0;
 }
 
@@ -107,6 +107,24 @@ function isSummaryOrBlankRow(raw, ProductName, BrandName, SIZE, COLOUR, row) {
   if (s.startsWith('date between')) return true;
   if (s.startsWith('| branchs')) return true;
   return false;
+}
+
+function isDefaultText(v) {
+  const t = cleanText(v).toLowerCase();
+  if (!t) return true;
+  const badExact = new Set(['brand', 'product', 'new in', 'inclusive of all taxes', '₹0.00', '0', '0.00', '₹0', '₹0.0', '₹0.00']);
+  if (badExact.has(t)) return true;
+  const badContains = ['inclusive of all taxes', 'new in'];
+  if (badContains.some(x => t.includes(x))) return true;
+  return false;
+}
+
+function shouldSkipBusinessRow(ProductName, BrandName, MRP, RSalePrice) {
+  const mrp0 = MRP == null ? null : Number(MRP);
+  const sale0 = RSalePrice == null ? null : Number(RSalePrice);
+  const bothZero = (mrp0 === 0 || mrp0 === null) && (sale0 === 0 || sale0 === null);
+  if (!bothZero) return false;
+  return isDefaultText(ProductName) || isDefaultText(BrandName);
 }
 
 router.get('/:branchId/import-jobs', requireBranchAuth, async (req, res) => {
@@ -259,6 +277,9 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
         let EANCode = row.eancode;
         if (EANCode != null && EANCode !== '') EANCode = cleanText(EANCode);
         if (isSummaryOrBlankRow(raw, ProductName, BrandName, SIZE, COLOUR, row)) {
+          continue;
+        }
+        if (shouldSkipBusinessRow(ProductName, BrandName, MRP, RSalePrice)) {
           continue;
         }
         if (!ProductName || !BrandName || !SIZE || !COLOUR) {
