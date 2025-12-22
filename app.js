@@ -15,7 +15,9 @@ const defaultOrigins = [
   'http://127.0.0.1:3002',
   'https://taras-kart-shopping-mall.vercel.app',
   'https://website-super-admin.vercel.app',
-  'https://taras-kart-admin.vercel.app'
+  'https://taras-kart-admin.vercel.app',
+  'https://www.taraskart.com',
+  'https://taraskart.com'
 ]
 
 const envOrigins = (process.env.CORS_ORIGINS || '')
