@@ -1,4 +1,3 @@
-// D:\shopping-backend\routes\razorpayRoutes.js
 const express = require('express')
 const pool = require('../db')
 const RazorpayService = require('../services/razorpayService')
@@ -21,7 +20,7 @@ router.post('/payments/create-order', async (req, res) => {
     if (!saleId) return res.status(400).json({ message: 'sale_id required' })
 
     const s = await pool.query(
-      `SELECT id, total, totals, customer_email, customer_mobile FROM sales WHERE id=$1::uuid`,
+      `SELECT id, total, totals, customer_email, customer_mobile, payment_status FROM sales WHERE id=$1::uuid`,
       [saleId]
     )
     if (!s.rowCount) return res.status(404).json({ message: 'Sale not found' })
@@ -29,6 +28,11 @@ router.post('/payments/create-order', async (req, res) => {
     const sale = s.rows[0]
     const amount = payableFromTotals(sale.totals) ?? Number(sale.total || 0)
     if (!amount || amount <= 0) return res.status(400).json({ message: 'Invalid amount' })
+
+    const currentPay = String(sale.payment_status || '').toUpperCase()
+    if (currentPay !== 'PAID') {
+      await pool.query(`UPDATE sales SET payment_status='PENDING', payment_method='ONLINE', updated_at=now() WHERE id=$1::uuid`, [saleId])
+    }
 
     const svc = new RazorpayService({})
     const order = await svc.createOrder({
@@ -42,7 +46,16 @@ router.post('/payments/create-order', async (req, res) => {
       `INSERT INTO payments (sale_id, razorpay_order_id, status, amount_paise, currency, email, phone, notes)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
        ON CONFLICT (razorpay_order_id) DO NOTHING`,
-      [saleId, order.id, order.status || 'created', order.amount, order.currency, sale.customer_email || null, sale.customer_mobile || null, JSON.stringify(order.notes || {})]
+      [
+        saleId,
+        order.id,
+        order.status || 'created',
+        order.amount,
+        order.currency,
+        sale.customer_email || null,
+        sale.customer_mobile || null,
+        JSON.stringify(order.notes || {})
+      ]
     )
 
     res.json({
@@ -81,16 +94,38 @@ router.post('/payments/verify', async (req, res) => {
       [razorpay_order_id, razorpay_payment_id, razorpay_signature, status]
     )
 
-    if (p.rowCount && ok) {
-      await pool.query(
-        `UPDATE sales SET payment_status='PAID' WHERE id=$1::uuid`,
-        [p.rows[0].sale_id]
-      )
+    if (p.rowCount) {
+      const saleId = p.rows[0].sale_id
+      if (ok) {
+        await pool.query(`UPDATE sales SET payment_status='PAID', updated_at=now() WHERE id=$1::uuid`, [saleId])
+      } else {
+        await pool.query(`UPDATE sales SET payment_status='FAILED', updated_at=now() WHERE id=$1::uuid AND payment_status <> 'PAID'`, [saleId])
+      }
     }
 
     res.json({ ok, status })
   } catch (e) {
     res.status(500).json({ message: e.message || 'verify failed' })
+  }
+})
+
+router.post('/payments/mark-failed', async (req, res) => {
+  try {
+    const saleId = String(req.body.sale_id || '').trim()
+    if (!saleId) return res.status(400).json({ message: 'sale_id required' })
+
+    const q = await pool.query(
+      `UPDATE sales
+       SET payment_status='FAILED', updated_at=now()
+       WHERE id=$1::uuid AND payment_status <> 'PAID'
+       RETURNING id, payment_status`,
+      [saleId]
+    )
+
+    if (!q.rowCount) return res.status(404).json({ message: 'Sale not found' })
+    res.json({ id: q.rows[0].id, payment_status: q.rows[0].payment_status })
+  } catch (e) {
+    res.status(500).json({ message: e.message || 'failed' })
   }
 })
 
@@ -133,7 +168,7 @@ router.post('/razorpay/webhook', express.raw({ type: 'application/json' }), asyn
 
     const paymentEntity = payload?.payload?.payment?.entity || null
     if (paymentEntity?.order_id) {
-      const status = String(paymentEntity.status || '').toUpperCase() === 'CAPTURED' ? 'PAID' : paymentEntity.status || null
+      const status = String(paymentEntity.status || '').toUpperCase() === 'CAPTURED' ? 'PAID' : String(paymentEntity.status || '').toUpperCase()
       await pool.query(
         `UPDATE payments
          SET razorpay_payment_id=$2,
@@ -151,16 +186,16 @@ router.post('/razorpay/webhook', express.raw({ type: 'application/json' }), asyn
           paymentEntity.contact || null
         ]
       )
+
       if (status === 'PAID') {
-        const s = await pool.query(
-          `SELECT sale_id FROM payments WHERE razorpay_order_id=$1`,
-          [paymentEntity.order_id]
-        )
+        const s = await pool.query(`SELECT sale_id FROM payments WHERE razorpay_order_id=$1`, [paymentEntity.order_id])
         if (s.rowCount) {
-          await pool.query(
-            `UPDATE sales SET payment_status='PAID' WHERE id=$1::uuid`,
-            [s.rows[0].sale_id]
-          )
+          await pool.query(`UPDATE sales SET payment_status='PAID', updated_at=now() WHERE id=$1::uuid`, [s.rows[0].sale_id])
+        }
+      } else if (status === 'FAILED') {
+        const s = await pool.query(`SELECT sale_id FROM payments WHERE razorpay_order_id=$1`, [paymentEntity.order_id])
+        if (s.rowCount) {
+          await pool.query(`UPDATE sales SET payment_status='FAILED', updated_at=now() WHERE id=$1::uuid AND payment_status <> 'PAID'`, [s.rows[0].sale_id])
         }
       }
     }

@@ -20,15 +20,24 @@ router.post('/web/place', async (req, res) => {
     items,
     branch_id,
     payment_status,
-    login_email
+    login_email,
+    payment_method
   } = req.body || {}
 
   if (!Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ message: 'items required' })
   }
 
-  const finalPaymentStatus = String(payment_status || 'COD').toUpperCase()
+  const method = String(payment_method || '').toUpperCase().trim()
   const resolvedBranchId = Number(branch_id || WEB_BRANCH_ID || 0) || null
+
+  let finalPaymentStatus = String(payment_status || '').toUpperCase().trim()
+  if (!finalPaymentStatus) {
+    finalPaymentStatus = method === 'ONLINE' ? 'PENDING' : 'COD'
+  }
+  if (!['COD', 'PENDING', 'PAID', 'FAILED'].includes(finalPaymentStatus)) {
+    finalPaymentStatus = method === 'ONLINE' ? 'PENDING' : 'COD'
+  }
 
   const client = await pool.connect()
   let saleId = null
@@ -107,9 +116,9 @@ router.post('/web/place', async (req, res) => {
 
     const inserted = await client.query(
       `INSERT INTO sales
-       (source, customer_email, customer_name, customer_mobile, shipping_address, status, payment_status, totals, branch_id, total)
+       (source, customer_email, customer_name, customer_mobile, shipping_address, status, payment_status, totals, branch_id, total, payment_method)
        VALUES
-       ($1,$2,$3,$4,$5::jsonb,$6,$7,$8::jsonb,$9,$10)
+       ($1,$2,$3,$4,$5::jsonb,$6,$7,$8::jsonb,$9,$10,$11)
        RETURNING id`,
       [
         'WEB',
@@ -121,7 +130,8 @@ router.post('/web/place', async (req, res) => {
         finalPaymentStatus,
         baseTotals,
         resolvedBranchId,
-        payable
+        payable,
+        method || null
       ]
     )
 
@@ -167,7 +177,9 @@ router.post('/web/place', async (req, res) => {
   let shiprocket = null
   let shiprocket_error = null
 
-  if (saleId && responseTotals && Number(responseTotals.payable || 0) > 0) {
+  const canFulfill = finalPaymentStatus === 'PAID' || finalPaymentStatus === 'COD'
+
+  if (canFulfill && saleId && responseTotals && Number(responseTotals.payable || 0) > 0) {
     const saleForShiprocket = {
       id: saleId,
       branch_id: resolvedBranchId,
@@ -201,6 +213,7 @@ router.post('/web/place', async (req, res) => {
   return res.json({
     id: saleId,
     status: 'PLACED',
+    payment_status: finalPaymentStatus,
     totals: responseTotals,
     shiprocket,
     shiprocket_error
@@ -209,7 +222,6 @@ router.post('/web/place', async (req, res) => {
 
 router.post('/web/set-payment-status', async (req, res) => {
   const client = await pool.connect()
-  let newStatus = null
 
   try {
     const requestedSaleId = String(req.body.sale_id || '').trim()
@@ -226,19 +238,13 @@ router.post('/web/set-payment-status', async (req, res) => {
     await client.query('BEGIN')
 
     const saleQ = await client.query(
-      `SELECT id,
-              payment_status,
-              branch_id,
-              customer_name,
-              customer_email,
-              customer_mobile,
-              shipping_address,
-              totals
+      `SELECT id, payment_status
        FROM sales
        WHERE id = $1::uuid
        FOR UPDATE`,
       [requestedSaleId]
     )
+
     if (!saleQ.rowCount) {
       await client.query('ROLLBACK')
       client.release()
@@ -262,9 +268,7 @@ router.post('/web/set-payment-status', async (req, res) => {
     await client.query('COMMIT')
     client.release()
 
-    newStatus = q.rows[0].payment_status
-
-    return res.json({ id: q.rows[0].id, payment_status: newStatus })
+    return res.json({ id: q.rows[0].id, payment_status: q.rows[0].payment_status })
   } catch (e) {
     try {
       await client.query('ROLLBACK')
@@ -318,9 +322,7 @@ router.get('/web/by-user', async (req, res) => {
     }
     if (mobile) {
       params.push(mobile)
-      ors.push(
-        `regexp_replace(s.customer_mobile,'\\D','','g') = regexp_replace($${params.length},'\\D','','g')`
-      )
+      ors.push(`regexp_replace(s.customer_mobile,'\\D','','g') = regexp_replace($${params.length},'\\D','','g')`)
     }
     if (ors.length) conds.push(`(${ors.join(' OR ')})`)
 
@@ -329,6 +331,7 @@ router.get('/web/by-user', async (req, res) => {
          s.id,
          s.status,
          s.payment_status,
+         s.payment_method,
          s.created_at,
          s.totals,
          s.branch_id,
@@ -417,6 +420,7 @@ router.get('/web/:id', async (req, res) => {
          s.id,
          s.status,
          s.payment_status,
+         s.payment_method,
          s.created_at,
          s.totals,
          s.branch_id,
@@ -550,6 +554,7 @@ router.get('/admin/:id', requireAuth, async (req, res) => {
          s.id,
          s.status,
          s.payment_status,
+         s.payment_method,
          s.created_at,
          s.totals,
          s.branch_id,
@@ -615,93 +620,6 @@ router.get('/admin/:id', requireAuth, async (req, res) => {
     return res.json({ sale: s.rows[0], items })
   } catch {
     return res.status(500).json({ message: 'Server error' })
-  }
-})
-
-router.post('/confirm', requireAuth, async (req, res) => {
-  const { sale_id, branch_id, payment, items, client_action_id } = req.body || {}
-  const branchId = Number(branch_id || req.user.branch_id)
-  if (!sale_id || !branchId || !Array.isArray(items) || !items.length || !client_action_id) {
-    return res
-      .status(400)
-      .json({ message: 'sale_id, branch_id, items[], client_action_id required' })
-  }
-
-  const client = await pool.connect()
-  try {
-    await client.query('BEGIN')
-
-    const idem = await client.query('SELECT key FROM idempotency_keys WHERE key = $1', [
-      client_action_id
-    ])
-    if (idem.rowCount) {
-      const s = await client.query('SELECT id, status, total FROM sales WHERE id = $1::uuid', [
-        sale_id
-      ])
-      await client.query('COMMIT')
-      return res.json({
-        id: sale_id,
-        status: s.rows[0]?.status || 'confirmed',
-        total: s.rows[0]?.total || 0,
-        idempotent: true
-      })
-    }
-
-    let total = 0
-    for (const it of items) total += Number(it?.qty ?? 0) * Number(it?.price ?? 0)
-
-    const s0 = await client.query('SELECT id FROM sales WHERE id = $1::uuid', [sale_id])
-    if (!s0.rowCount) {
-      await client.query(
-        `INSERT INTO sales (id, branch_id, status, total, payment_method, payment_ref)
-         VALUES ($1::uuid,$2,'pending',$3,$4,$5)`,
-        [sale_id, branchId, total, payment?.method || null, payment?.ref || null]
-      )
-    } else {
-      await client.query('UPDATE sales SET total = $2 WHERE id = $1::uuid', [sale_id, total])
-    }
-
-    for (const it of items) {
-      const vId = Number(it?.variant_id ?? it?.product_id)
-      const qty = Number(it?.qty ?? 0)
-      const s1 = await client.query(
-        'SELECT on_hand, reserved FROM branch_variant_stock WHERE branch_id = $1 AND variant_id = $2 FOR UPDATE',
-        [branchId, vId]
-      )
-      if (!s1.rowCount) {
-        await client.query('ROLLBACK')
-        return res.status(404).json({ message: `Variant ${vId} not found in branch` })
-      }
-      await client.query(
-        'UPDATE branch_variant_stock SET reserved = GREATEST(reserved - $3, 0) WHERE branch_id = $1 AND variant_id = $2',
-        [branchId, vId, qty]
-      )
-    }
-
-    await client.query('DELETE FROM sale_items WHERE sale_id = $1::uuid', [sale_id])
-    for (const it of items) {
-      await client.query(
-        'INSERT INTO sale_items (sale_id, variant_id, ean_code, qty, price) VALUES ($1::uuid,$2,$3,$4,$5)',
-        [
-          sale_id,
-          Number(it?.variant_id ?? it?.product_id),
-          it?.barcode_value ?? it?.ean_code ?? null,
-          Number(it?.qty ?? 0),
-          Number(it?.price ?? 0)
-        ]
-      )
-    }
-
-    await client.query('UPDATE sales SET status = $2 WHERE id = $1::uuid', [sale_id, 'confirmed'])
-    await client.query('INSERT INTO idempotency_keys (key) VALUES ($1)', [client_action_id])
-
-    await client.query('COMMIT')
-    return res.json({ id: sale_id, status: 'confirmed', total })
-  } catch {
-    await client.query('ROLLBACK')
-    return res.status(500).json({ message: 'Server error' })
-  } finally {
-    client.release()
   }
 })
 
