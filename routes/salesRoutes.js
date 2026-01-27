@@ -1,4 +1,5 @@
 const express = require('express')
+const crypto = require('crypto')
 const pool = require('../db')
 const { requireAuth } = require('../middleware/auth')
 const { fulfillOrderWithShiprocket } = require('../services/orderFulfillment')
@@ -6,6 +7,15 @@ const { fulfillOrderWithShiprocket } = require('../services/orderFulfillment')
 const router = express.Router()
 
 const isDebug = () => String(process.env.DEBUG_ERRORS || '').trim() === '1'
+
+const uuid = () => {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID()
+  const b = crypto.randomBytes(16)
+  b[6] = (b[6] & 0x0f) | 0x40
+  b[8] = (b[8] & 0x3f) | 0x80
+  const s = b.toString('hex')
+  return `${s.slice(0, 8)}-${s.slice(8, 12)}-${s.slice(12, 16)}-${s.slice(16, 20)}-${s.slice(20)}`
+}
 
 router.post('/web/place', async (req, res) => {
   const {
@@ -32,9 +42,7 @@ router.post('/web/place', async (req, res) => {
   const method = String(payment_method || '').toUpperCase().trim()
 
   let finalPaymentStatus = String(payment_status || '').toUpperCase().trim()
-  if (!finalPaymentStatus) {
-    finalPaymentStatus = method === 'ONLINE' ? 'PENDING' : 'COD'
-  }
+  if (!finalPaymentStatus) finalPaymentStatus = method === 'ONLINE' ? 'PENDING' : 'COD'
   if (!['COD', 'PENDING', 'PAID', 'FAILED'].includes(finalPaymentStatus)) {
     finalPaymentStatus = method === 'ONLINE' ? 'PENDING' : 'COD'
   }
@@ -185,10 +193,11 @@ router.post('/web/place', async (req, res) => {
       const qty = Number(it?.qty ?? 1) || 1
       await client.query(
         `INSERT INTO sale_items
-         (sale_id, variant_id, qty, price, mrp, size, colour, image_url, ean_code)
+         (id, sale_id, variant_id, qty, price, mrp, size, colour, image_url, ean_code)
          VALUES
-         ($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9)`,
+         ($1::uuid,$2::uuid,$3,$4,$5,$6,$7,$8,$9,$10)`,
         [
+          uuid(),
           saleId,
           vId,
           qty,
@@ -459,6 +468,7 @@ router.get('/web/by-user', async (req, res) => {
 router.get('/web/:id', async (req, res) => {
   const id = String(req.params.id || '').trim()
   if (!id) return res.status(400).json({ message: 'id required' })
+
   try {
     const s = await pool.query(
       `SELECT
