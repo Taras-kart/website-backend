@@ -5,6 +5,8 @@ const { fulfillOrderWithShiprocket } = require('../services/orderFulfillment')
 
 const router = express.Router()
 
+const isDebug = () => String(process.env.DEBUG_ERRORS || '').trim() === '1'
+
 router.post('/web/place', async (req, res) => {
   const {
     customer_email,
@@ -21,6 +23,10 @@ router.post('/web/place', async (req, res) => {
 
   if (!Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ message: 'items required' })
+  }
+
+  if (!shipping_address || typeof shipping_address !== 'object') {
+    return res.status(400).json({ message: 'shipping_address required' })
   }
 
   const method = String(payment_method || '').toUpperCase().trim()
@@ -58,17 +64,17 @@ router.post('/web/place', async (req, res) => {
     let bagTotal = 0
     let discountTotal = 0
     for (const it of items) {
-      const mrp = Number(it?.mrp ?? it?.price ?? 0)
-      const price = Number(it?.price ?? 0)
-      const qty = Number(it?.qty ?? 1)
+      const mrp = Number(it?.mrp ?? it?.price ?? 0) || 0
+      const price = Number(it?.price ?? 0) || 0
+      const qty = Number(it?.qty ?? 1) || 1
       bagTotal += mrp * qty
       discountTotal += Math.max(mrp - price, 0) * qty
     }
 
-    const couponPct = Number(totals?.couponPct ?? 0)
+    const couponPct = Number(totals?.couponPct ?? 0) || 0
     const couponDiscount = Math.floor(((bagTotal - discountTotal) * couponPct) / 100)
-    const convenience = Number(totals?.convenience ?? 0)
-    const giftWrap = Number(totals?.giftWrap ?? 0)
+    const convenience = Number(totals?.convenience ?? 0) || 0
+    const giftWrap = Number(totals?.giftWrap ?? 0) || 0
     const payable = bagTotal - discountTotal - couponDiscount + convenience + giftWrap
 
     saleTotals = {
@@ -81,8 +87,8 @@ router.post('/web/place', async (req, res) => {
       payable
     }
 
-    const baseTotals = totals ? JSON.stringify(totals) : JSON.stringify(saleTotals)
-    const storedEmail = login_email || customer_email || null
+    const baseTotals = JSON.stringify(totals && typeof totals === 'object' ? totals : saleTotals)
+    const storedEmail = (login_email || customer_email || null) ? String(login_email || customer_email) : null
 
     if (providedBranchId) {
       resolvedBranchId = providedBranchId
@@ -114,33 +120,36 @@ router.post('/web/place', async (req, res) => {
 
     if (!resolvedBranchId) {
       await client.query('ROLLBACK')
-      client.release()
       return res.status(400).json({ message: 'Stock not available in a single branch for all items' })
     }
 
-    for (const [vId, qty] of agg.entries()) {
-      const stockQ = await client.query(
-        'SELECT on_hand FROM branch_variant_stock WHERE branch_id=$1 AND variant_id=$2 FOR UPDATE',
-        [resolvedBranchId, vId]
-      )
-      if (!stockQ.rowCount) {
-        await client.query('ROLLBACK')
-        client.release()
-        return res.status(400).json({ message: `Stock not found for variant ${vId} in branch ${resolvedBranchId}` })
-      }
-      const onHand = Number(stockQ.rows[0].on_hand || 0)
-      if (onHand < qty) {
-        await client.query('ROLLBACK')
-        client.release()
-        return res.status(400).json({ message: `Insufficient stock for variant ${vId} in branch ${resolvedBranchId}` })
-      }
-    }
+    const variantIds = Array.from(agg.keys()).sort((a, b) => a - b)
 
-    for (const [vId, qty] of agg.entries()) {
-      await client.query(
-        'UPDATE branch_variant_stock SET on_hand = on_hand - $3 WHERE branch_id=$1 AND variant_id=$2',
+    for (const vId of variantIds) {
+      const qty = Number(agg.get(vId) || 0)
+      const upd = await client.query(
+        `
+        UPDATE branch_variant_stock
+        SET on_hand = on_hand - $3
+        WHERE branch_id = $1
+          AND variant_id = $2
+          AND COALESCE(on_hand, 0) >= $3
+        RETURNING on_hand
+        `,
         [resolvedBranchId, vId, qty]
       )
+
+      if (!upd.rowCount) {
+        const existsQ = await client.query(
+          'SELECT 1 FROM branch_variant_stock WHERE branch_id=$1 AND variant_id=$2 LIMIT 1',
+          [resolvedBranchId, vId]
+        )
+        await client.query('ROLLBACK')
+        if (!existsQ.rowCount) {
+          return res.status(400).json({ message: `Stock not found for variant ${vId} in branch ${resolvedBranchId}` })
+        }
+        return res.status(400).json({ message: `Insufficient stock for variant ${vId} in branch ${resolvedBranchId}` })
+      }
     }
 
     const inserted = await client.query(
@@ -152,9 +161,9 @@ router.post('/web/place', async (req, res) => {
       [
         'WEB',
         storedEmail,
-        customer_name || null,
-        customer_mobile || null,
-        shipping_address ? JSON.stringify(shipping_address) : null,
+        customer_name ? String(customer_name) : null,
+        customer_mobile ? String(customer_mobile) : null,
+        JSON.stringify(shipping_address),
         'PLACED',
         finalPaymentStatus,
         baseTotals,
@@ -164,9 +173,16 @@ router.post('/web/place', async (req, res) => {
       ]
     )
 
-    saleId = inserted.rows[0].id
+    saleId = inserted.rows?.[0]?.id || null
+
+    if (!saleId) {
+      await client.query('ROLLBACK')
+      return res.status(500).json({ message: 'Failed to create order' })
+    }
 
     for (const it of items) {
+      const vId = Number(it?.variant_id ?? it?.product_id)
+      const qty = Number(it?.qty ?? 1) || 1
       await client.query(
         `INSERT INTO sale_items
          (sale_id, variant_id, qty, price, mrp, size, colour, image_url, ean_code)
@@ -174,9 +190,9 @@ router.post('/web/place', async (req, res) => {
          ($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9)`,
         [
           saleId,
-          Number(it?.variant_id ?? it?.product_id),
-          Number(it?.qty ?? 1),
-          Number(it?.price ?? 0),
+          vId,
+          qty,
+          Number(it?.price ?? 0) || 0,
           it?.mrp != null ? Number(it.mrp) : null,
           it?.size ?? it?.selected_size ?? null,
           it?.colour ?? it?.color ?? it?.selected_color ?? null,
@@ -191,17 +207,15 @@ router.post('/web/place', async (req, res) => {
     try {
       await client.query('ROLLBACK')
     } catch {}
-    try {
-      client.release()
-    } catch {}
-    return res.status(500).json({ message: 'Server error' })
+    const msg = isDebug() ? (e?.message || String(e)) : 'Server error'
+    return res.status(500).json({ message: msg })
   } finally {
     try {
       client.release()
     } catch {}
   }
 
-  const responseTotals = saleTotals || totals || null
+  const responseTotals = saleTotals || (totals && typeof totals === 'object' ? totals : null) || null
 
   let shiprocket = null
   let shiprocket_error = null
@@ -306,7 +320,8 @@ router.post('/web/set-payment-status', async (req, res) => {
     try {
       client.release()
     } catch {}
-    return res.status(500).json({ message: 'Server error' })
+    const msg = isDebug() ? (e?.message || String(e)) : 'Server error'
+    return res.status(500).json({ message: msg })
   }
 })
 
