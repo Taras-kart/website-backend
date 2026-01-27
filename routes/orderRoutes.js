@@ -4,6 +4,170 @@ const { requireAuth } = require('../middleware/auth')
 const { getTracking } = require('../controllers/orderController')
 const Shiprocket = require('../services/shiprocketService')
 
+router.post('/web/place', async (req, res) => {
+  const body = req.body || {}
+  const items = Array.isArray(body.items) ? body.items : []
+  const totals = body.totals && typeof body.totals === 'object' ? body.totals : null
+  const shipping_address =
+    body.shipping_address && typeof body.shipping_address === 'object'
+      ? body.shipping_address
+      : null
+
+  const customer_name = body.customer_name ? String(body.customer_name) : null
+  const customer_email = body.customer_email ? String(body.customer_email) : null
+  const customer_mobile = body.customer_mobile ? String(body.customer_mobile) : null
+  const payment_method = body.payment_method ? String(body.payment_method) : 'COD'
+  const payment_status = body.payment_status ? String(body.payment_status) : 'COD'
+  const login_email = body.login_email ? String(body.login_email) : null
+
+  if (!items.length) return res.status(400).json({ message: 'Items required' })
+  if (!shipping_address) return res.status(400).json({ message: 'shipping_address required' })
+
+  const normalizedItems = items.map((it) => ({
+    product_id: it.product_id != null ? Number(it.product_id) : null,
+    variant_id: it.variant_id != null ? Number(it.variant_id) : null,
+    qty: Number(it.qty || 1) || 1,
+    price: Number(it.price || 0) || 0,
+    mrp: Number(it.mrp || it.price || 0) || 0,
+    size: it.size != null ? String(it.size) : null,
+    colour: it.colour != null ? String(it.colour) : null,
+    image_url: it.image_url != null ? String(it.image_url) : null
+  }))
+
+  if (normalizedItems.some((it) => !it.variant_id || it.qty <= 0)) {
+    return res.status(400).json({ message: 'Invalid items (variant_id/qty)' })
+  }
+
+  const cartJson = JSON.stringify(
+    normalizedItems.map((i) => ({ variant_id: i.variant_id, qty: i.qty }))
+  )
+
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+
+    const branchQ = await client.query(
+      `
+      WITH cart AS (
+        SELECT * FROM jsonb_to_recordset($1::jsonb)
+        AS x(variant_id int, qty int)
+      )
+      SELECT s.branch_id
+      FROM stocks s
+      JOIN cart c ON c.variant_id = s.variant_id
+      WHERE s.qty >= c.qty
+      GROUP BY s.branch_id
+      HAVING COUNT(*) = (SELECT COUNT(*) FROM cart)
+      ORDER BY s.branch_id ASC
+      LIMIT 1
+      `,
+      [cartJson]
+    )
+
+    const chosenBranchId = branchQ.rows?.[0]?.branch_id || null
+    if (!chosenBranchId) {
+      await client.query('ROLLBACK')
+      return res.status(400).json({
+        message: 'Stock not available in a single branch for all items'
+      })
+    }
+
+    for (const it of normalizedItems) {
+      const lockQ = await client.query(
+        `
+        SELECT qty
+        FROM stocks
+        WHERE branch_id = $1 AND variant_id = $2
+        FOR UPDATE
+        `,
+        [chosenBranchId, it.variant_id]
+      )
+
+      const available = Number(lockQ.rows?.[0]?.qty || 0)
+      if (available < it.qty) {
+        await client.query('ROLLBACK')
+        return res.status(400).json({
+          message: `Insufficient stock for variant ${it.variant_id} in branch ${chosenBranchId}`
+        })
+      }
+
+      await client.query(
+        `
+        UPDATE stocks
+        SET qty = qty - $1
+        WHERE branch_id = $2 AND variant_id = $3
+        `,
+        [it.qty, chosenBranchId, it.variant_id]
+      )
+    }
+
+    const totalPayable =
+      totals && totals.payable != null ? Number(totals.payable) : null
+
+    const saleQ = await client.query(
+      `
+      INSERT INTO sales
+        (source, status, payment_status, payment_method, total, totals, branch_id,
+         customer_name, customer_email, customer_mobile, shipping_address, login_email, created_at)
+      VALUES
+        ('WEB', 'PLACED', $1, $2, $3, $4::jsonb, $5,
+         $6, $7, $8, $9::jsonb, $10, now())
+      RETURNING id
+      `,
+      [
+        payment_status,
+        payment_method,
+        Number.isFinite(totalPayable) ? totalPayable : 0,
+        JSON.stringify(totals || {}),
+        chosenBranchId,
+        customer_name,
+        customer_email,
+        customer_mobile,
+        JSON.stringify(shipping_address || {}),
+        login_email
+      ]
+    )
+
+    const saleId = saleQ.rows?.[0]?.id || null
+    if (!saleId) {
+      await client.query('ROLLBACK')
+      return res.status(500).json({ message: 'Failed to create order' })
+    }
+
+    for (const it of normalizedItems) {
+      await client.query(
+        `
+        INSERT INTO sale_items
+          (sale_id, product_id, variant_id, qty, price, mrp, size, colour, image_url, created_at)
+        VALUES
+          ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, now())
+        `,
+        [
+          saleId,
+          it.product_id,
+          it.variant_id,
+          it.qty,
+          it.price,
+          it.mrp,
+          it.size,
+          it.colour,
+          it.image_url
+        ]
+      )
+    }
+
+    await client.query('COMMIT')
+    return res.json({ id: saleId, branch_id: chosenBranchId })
+  } catch (e) {
+    try {
+      await client.query('ROLLBACK')
+    } catch {}
+    return res.status(500).json({ message: 'Server error' })
+  } finally {
+    client.release()
+  }
+})
+
 router.get('/', requireAuth, async (req, res) => {
   try {
     const role = String(req.user?.role_enum || req.user?.role || '').toUpperCase()
