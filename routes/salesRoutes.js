@@ -5,11 +5,6 @@ const { fulfillOrderWithShiprocket } = require('../services/orderFulfillment')
 
 const router = express.Router()
 
-const WEB_BRANCH_ID = (() => {
-  const v = parseInt(process.env.WEB_BRANCH_ID || '', 10)
-  return Number.isFinite(v) && v > 0 ? v : 2
-})()
-
 router.post('/web/place', async (req, res) => {
   const {
     customer_email,
@@ -29,7 +24,6 @@ router.post('/web/place', async (req, res) => {
   }
 
   const method = String(payment_method || '').toUpperCase().trim()
-  const resolvedBranchId = Number(branch_id || WEB_BRANCH_ID || 0) || null
 
   let finalPaymentStatus = String(payment_status || '').toUpperCase().trim()
   if (!finalPaymentStatus) {
@@ -39,9 +33,24 @@ router.post('/web/place', async (req, res) => {
     finalPaymentStatus = method === 'ONLINE' ? 'PENDING' : 'COD'
   }
 
+  const agg = new Map()
+  for (const it of items) {
+    const vId = Number(it?.variant_id ?? it?.product_id)
+    const qty = Number(it?.qty ?? 1)
+    if (!vId || qty <= 0) continue
+    agg.set(vId, (agg.get(vId) || 0) + qty)
+  }
+
+  if (agg.size === 0) {
+    return res.status(400).json({ message: 'invalid items' })
+  }
+
+  const providedBranchId = Number(branch_id || 0) || null
+
   const client = await pool.connect()
   let saleId = null
   let saleTotals = null
+  let resolvedBranchId = null
 
   try {
     await client.query('BEGIN')
@@ -75,18 +84,38 @@ router.post('/web/place', async (req, res) => {
     const baseTotals = totals ? JSON.stringify(totals) : JSON.stringify(saleTotals)
     const storedEmail = login_email || customer_email || null
 
+    if (providedBranchId) {
+      resolvedBranchId = providedBranchId
+    } else {
+      const pairs = []
+      for (const [vId, qty] of agg.entries()) pairs.push({ variant_id: vId, qty })
+      const cartJson = JSON.stringify(pairs)
+
+      const branchQ = await client.query(
+        `
+        WITH cart AS (
+          SELECT * FROM jsonb_to_recordset($1::jsonb)
+          AS x(variant_id int, qty int)
+        )
+        SELECT bvs.branch_id
+        FROM branch_variant_stock bvs
+        JOIN cart c ON c.variant_id = bvs.variant_id
+        WHERE COALESCE(bvs.on_hand, 0) >= c.qty
+        GROUP BY bvs.branch_id
+        HAVING COUNT(*) = (SELECT COUNT(*) FROM cart)
+        ORDER BY bvs.branch_id ASC
+        LIMIT 1
+        `,
+        [cartJson]
+      )
+
+      resolvedBranchId = branchQ.rows?.[0]?.branch_id ? Number(branchQ.rows[0].branch_id) : null
+    }
+
     if (!resolvedBranchId) {
       await client.query('ROLLBACK')
       client.release()
-      return res.status(400).json({ message: 'branch_id required' })
-    }
-
-    const agg = new Map()
-    for (const it of items) {
-      const vId = Number(it?.variant_id ?? it?.product_id)
-      const qty = Number(it?.qty ?? 1)
-      if (!vId || qty <= 0) continue
-      agg.set(vId, (agg.get(vId) || 0) + qty)
+      return res.status(400).json({ message: 'Stock not available in a single branch for all items' })
     }
 
     for (const [vId, qty] of agg.entries()) {
@@ -215,6 +244,7 @@ router.post('/web/place', async (req, res) => {
     status: 'PLACED',
     payment_status: finalPaymentStatus,
     totals: responseTotals,
+    branch_id: resolvedBranchId,
     shiprocket,
     shiprocket_error
   })
