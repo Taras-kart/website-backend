@@ -1,7 +1,8 @@
+require('dotenv').config();
 const { Pool } = require('pg');
 
 const pool = new Pool({
-  connectionString: 'postgresql://h5pld5:xau_ijXYyK3RMaZ91wJ64ig5qUmauAtEp3J61@eu-central-1.sql.xata.sh:5432/taraskart:main?sslmode=require',
+  connectionString: process.env.DATABASE_URL,
   ssl: { require: true, rejectUnauthorized: false },
   max: 5,
   idleTimeoutMillis: 30000,
