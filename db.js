@@ -2,7 +2,7 @@ require('dotenv').config();
 const { Pool } = require('pg');
 
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString: 'postgresql://neondb_owner:npg_L4WCoHgsFbt1@ep-lingering-lab-a1plroab-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require',
   ssl: { require: true, rejectUnauthorized: false },
   max: 5,
   idleTimeoutMillis: 30000,
