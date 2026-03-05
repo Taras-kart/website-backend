@@ -17,7 +17,9 @@ const defaultOrigins = [
   'https://website-super-admin.vercel.app',
   'https://taras-kart-admin.vercel.app',
   'https://www.taraskart.com',
-  'https://taraskart.com'
+  'https://taraskart.com',
+  'https://www.attach.co.in/',
+  'https://www.attach.co.in'
 ]
 
 const envOrigins = (process.env.CORS_ORIGINS || '')
