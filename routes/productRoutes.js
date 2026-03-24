@@ -813,4 +813,180 @@ router.get('/:id(\\d+)', async (req, res) => {
   }
 })
 
+router.put('/:id(\\d+)', async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const variantId = parseInt(req.params.id, 10);
+    if (!Number.isFinite(variantId) || variantId <= 0) {
+      return res.status(400).json({ message: 'Invalid product id' });
+    }
+
+    const {
+      category,
+      brand,
+      product_name,
+      color,
+      size,
+      original_price_b2b,
+      discount_b2b,
+      final_price_b2b,
+      original_price_b2c,
+      discount_b2c,
+      final_price_b2c,
+      total_count,
+      image_url
+    } = req.body || {};
+
+    await client.query('BEGIN');
+
+    const existingVariant = await client.query(
+      `
+      SELECT
+        v.id AS variant_id,
+        v.product_id,
+        v.mrp,
+        p.id AS product_id_actual
+      FROM product_variants v
+      JOIN products p ON p.id = v.product_id
+      WHERE v.id = $1
+      LIMIT 1
+      `,
+      [variantId]
+    );
+
+    if (!existingVariant.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'Product not found' });
+    }
+
+    const row = existingVariant.rows[0];
+    const productId = row.product_id;
+
+    const gender = toGender(category);
+    if (!gender) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: 'Invalid category. Use Men, Women, or Kids' });
+    }
+
+    const mrp =
+      Number.isFinite(Number(original_price_b2c))
+        ? Number(original_price_b2c)
+        : Number(original_price_b2b);
+
+    const b2bDiscount = Number.isFinite(Number(discount_b2b)) ? Number(discount_b2b) : 0;
+    const b2cDiscount = Number.isFinite(Number(discount_b2c)) ? Number(discount_b2c) : 0;
+    const stockCount = Math.max(0, parseInt(total_count, 10) || 0);
+
+    await client.query(
+      `
+      UPDATE products
+      SET
+        name = $1,
+        brand_name = $2,
+        gender = $3
+      WHERE id = $4
+      `,
+      [product_name, brand, gender, productId]
+    );
+
+    await client.query(
+      `
+      UPDATE product_variants
+      SET
+        colour = $1,
+        size = $2,
+        mrp = $3,
+        b2b_discount_pct = $4,
+        b2c_discount_pct = $5,
+        image_url = $6
+      WHERE id = $7
+      `,
+      [color, size, mrp, b2bDiscount, b2cDiscount, image_url || null, variantId]
+    );
+
+    const branchId = getBranchIdFromReq(req);
+
+    if (branchId) {
+      const existingStock = await client.query(
+        `
+        SELECT id
+        FROM branch_variant_stock
+        WHERE variant_id = $1 AND branch_id = $2
+        LIMIT 1
+        `,
+        [variantId, branchId]
+      );
+
+      if (existingStock.rows.length) {
+        await client.query(
+          `
+          UPDATE branch_variant_stock
+          SET on_hand = $1
+          WHERE variant_id = $2 AND branch_id = $3
+          `,
+          [stockCount, variantId, branchId]
+        );
+      } else {
+        await client.query(
+          `
+          INSERT INTO branch_variant_stock (variant_id, branch_id, on_hand, reserved, is_active)
+          VALUES ($1, $2, $3, 0, TRUE)
+          `,
+          [variantId, branchId, stockCount]
+        );
+      }
+    }
+
+    const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh';
+    const refreshed = await client.query(
+      `
+      ${buildProductSelectSql({ where: 'v.id = $1', branchIdx: 2, cloudIdx: 3 })}
+      `,
+      [variantId, branchId, cloud]
+    );
+
+    await client.query('COMMIT');
+
+    if (!refreshed.rows.length) {
+      return res.json({
+        id: variantId,
+        category,
+        brand,
+        product_name,
+        color,
+        size,
+        original_price_b2b,
+        discount_b2b,
+        final_price_b2b,
+        original_price_b2c,
+        discount_b2c,
+        final_price_b2c,
+        total_count: stockCount,
+        image_url
+      });
+    }
+
+    const updatedRow = refreshed.rows[0];
+
+    return res.json({
+      ...updatedRow,
+      category: updatedRow.gender ? updatedRow.gender.toLowerCase() : category,
+      discount_b2b: b2bDiscount,
+      discount_b2c: b2cDiscount,
+      final_price_b2b,
+      final_price_b2c,
+      total_count: stockCount
+    });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    return res.status(500).json({
+      message: 'Error updating product',
+      error: err.message
+    });
+  } finally {
+    client.release();
+  }
+});
+
 module.exports = router
