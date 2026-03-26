@@ -273,6 +273,71 @@ router.post('/web/place', async (req, res) => {
   })
 })
 
+// ══════════════════════════════════════════════════════════════
+// B2B BULK ORDER ROUTE (Bypasses Stock Checks & Shiprocket)
+// ══════════════════════════════════════════════════════════════
+router.post('/web/b2b-place', async (req, res) => {
+  const { customer_email, customer_name, shipping_address, items, totals, payment_method } = req.body || {}
+
+  if (!Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ message: 'items required' })
+  }
+
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+
+    // 1. Create the Sale Record as an Inquiry (Status: B2B_PENDING)
+    const saleQ = await client.query(
+      `INSERT INTO sales
+       (source, customer_email, customer_name, shipping_address, status, payment_status, totals, total, payment_method, created_at)
+       VALUES
+       ('WEB_B2B', $1, $2, $3::jsonb, 'B2B_PENDING', 'PENDING', $4::jsonb, $5, $6, now())
+       RETURNING id`,
+      [
+        customer_email || 'b2b@wholesale.com',
+        customer_name || 'B2B User',
+        JSON.stringify(shipping_address || {}),
+        JSON.stringify(totals || {}),
+        totals?.payable || 0,
+        payment_method || 'B2B_BULK'
+      ]
+    )
+
+    const saleId = saleQ.rows[0].id
+
+    // 2. Insert the Bulk Items (No stock decrementing!)
+    for (const it of items) {
+      await client.query(
+        `INSERT INTO sale_items
+         (id, sale_id, variant_id, qty, price, mrp, size, colour, image_url)
+         VALUES
+         ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9)`,
+        [
+          uuid(), 
+          saleId, 
+          it.variant_id || null, 
+          it.qty || 1, 
+          it.price || 0, 
+          it.mrp || 0, 
+          it.size || '', 
+          it.colour || '', 
+          it.image_url || ''
+        ]
+      )
+    }
+
+    await client.query('COMMIT')
+    return res.json({ id: saleId, status: 'B2B_PENDING', message: 'Bulk order submitted successfully' })
+  } catch (e) {
+    await client.query('ROLLBACK')
+    console.error('B2B Order Error:', e)
+    return res.status(500).json({ message: 'Failed to place B2B order' })
+  } finally {
+    client.release()
+  }
+})
+
 router.post('/web/set-payment-status', async (req, res) => {
   const client = await pool.connect()
 
@@ -679,3 +744,50 @@ router.get('/admin/:id', requireAuth, async (req, res) => {
 })
 
 module.exports = router
+
+// ══════════════════════════════════════════════════════════════
+// ADMIN B2B STATUS UPDATE ROUTE
+// ══════════════════════════════════════════════════════════════
+router.post('/web/b2b-update-status', requireAuth, async (req, res) => {
+  const client = await pool.connect()
+  try {
+    const { sale_id, new_status, new_payment_status } = req.body || {}
+    if (!sale_id) return res.status(400).json({ message: 'sale_id required' })
+
+    await client.query('BEGIN')
+    
+    // Build the dynamic update query
+    let updates = []
+    let params = [sale_id]
+    let paramIndex = 2
+
+    if (new_status) {
+      updates.push(`status = $${paramIndex}`)
+      params.push(new_status)
+      paramIndex++
+    }
+    if (new_payment_status) {
+      updates.push(`payment_status = $${paramIndex}`)
+      params.push(new_payment_status)
+      paramIndex++
+    }
+
+    if (updates.length === 0) {
+      await client.query('ROLLBACK')
+      return res.status(400).json({ message: 'No valid updates provided' })
+    }
+
+    const q = await client.query(
+      `UPDATE sales SET ${updates.join(', ')}, updated_at=now() WHERE id=$1::uuid RETURNING id, status, payment_status`,
+      params
+    )
+
+    await client.query('COMMIT')
+    return res.json(q.rows[0])
+  } catch (e) {
+    await client.query('ROLLBACK')
+    return res.status(500).json({ message: 'Server error during B2B update' })
+  } finally {
+    client.release()
+  }
+})
