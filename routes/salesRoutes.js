@@ -284,7 +284,7 @@ router.post('/web/b2b-place', async (req, res) => { // FIX 2: Added requireAuth
   if (!customer_email) {
     return res.status(400).json({ message: 'customer_email required' })
   }
-  
+
   if (!Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ message: 'items required' })
   }
@@ -635,7 +635,7 @@ router.get('/admin', requireAuth, async (req, res) => {
     if (!isSuper) {
       if (!branchId) return res.status(403).json({ message: 'Forbidden' })
       params.push(branchId)
-      where.push(`s.branch_id = $${params.length}`)
+       where.push(`(s.branch_id = $${params.length} OR s.is_b2b = true)`)
     }
 
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : ''
@@ -677,11 +677,11 @@ router.get('/admin/:id', requireAuth, async (req, res) => {
     const params = [id]
     let where = `s.id = $1::uuid`
 
-    if (!isSuper) {
-      if (!branchId) return res.status(403).json({ message: 'Forbidden' })
-      params.push(branchId)
-      where += ` AND s.branch_id = $2`
-    }
+if (!isSuper) {
+  if (!branchId) return res.status(403).json({ message: 'Forbidden' })
+  params.push(branchId)
+  where += ` AND (s.branch_id = $2 OR s.is_b2b = true)`
+}
 
     const s = await pool.query(
       `SELECT
