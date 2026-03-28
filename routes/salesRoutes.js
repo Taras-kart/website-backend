@@ -272,7 +272,6 @@ router.post('/web/place', async (req, res) => {
     shiprocket_error
   })
 })
-
 // ══════════════════════════════════════════════════════════════
 // B2B BULK ORDER ROUTE (Bypasses Stock Checks & Shiprocket)
 // ══════════════════════════════════════════════════════════════
@@ -287,12 +286,12 @@ router.post('/web/b2b-place', async (req, res) => {
   try {
     await client.query('BEGIN')
 
-    // 1. Create the Sale Record as an Inquiry (Status: B2B_PENDING)
+    // 1. Create the Sale Record as an Inquiry (Status: B2B_PENDING, is_b2b: true)
     const saleQ = await client.query(
       `INSERT INTO sales
-       (source, customer_email, customer_name, shipping_address, status, payment_status, totals, total, payment_method, created_at)
+       (source, customer_email, customer_name, shipping_address, status, payment_status, totals, total, payment_method, is_b2b, created_at)
        VALUES
-       ('WEB_B2B', $1, $2, $3::jsonb, 'B2B_PENDING', 'PENDING', $4::jsonb, $5, $6, now())
+       ('B2B', $1, $2, $3::jsonb, 'B2B_PENDING', 'PENDING', $4::jsonb, $5, $6, true, now())
        RETURNING id`,
       [
         customer_email || 'b2b@wholesale.com',
