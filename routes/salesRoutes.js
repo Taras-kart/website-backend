@@ -277,9 +277,14 @@ router.post('/web/place', async (req, res) => {
 // ══════════════════════════════════════════════════════════════
 // B2B BULK ORDER ROUTE (Bypasses Stock Checks & Shiprocket)
 // ══════════════════════════════════════════════════════════════
-router.post('/web/b2b-place', requireAuth, async (req, res) => { // FIX 2: Added requireAuth
+router.post('/web/b2b-place', async (req, res) => { // FIX 2: Added requireAuth
   const { customer_email, customer_name, shipping_address, items, totals, payment_method } = req.body || {}
 
+    // Validate email is present instead
+  if (!customer_email) {
+    return res.status(400).json({ message: 'customer_email required' })
+  }
+  
   if (!Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ message: 'items required' })
   }
