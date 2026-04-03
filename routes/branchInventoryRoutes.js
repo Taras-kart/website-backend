@@ -136,11 +136,15 @@ async function ensureImportRowsTable() {
       import_job_id BIGINT NOT NULL REFERENCES import_jobs(id) ON DELETE CASCADE,
       raw_row_json JSONB NOT NULL,
       status_enum TEXT NOT NULL DEFAULT 'PENDING',
-      error_msg TEXT,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      processed_at TIMESTAMPTZ
+      error_msg TEXT
     )
   `);
+
+  await pool.query(`ALTER TABLE import_rows ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`);
+  await pool.query(`ALTER TABLE import_rows ADD COLUMN IF NOT EXISTS processed_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE import_rows ADD COLUMN IF NOT EXISTS raw_row_json JSONB`);
+  await pool.query(`ALTER TABLE import_rows ADD COLUMN IF NOT EXISTS status_enum TEXT NOT NULL DEFAULT 'PENDING'`);
+  await pool.query(`ALTER TABLE import_rows ADD COLUMN IF NOT EXISTS error_msg TEXT`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_import_rows_job_status_id ON import_rows(import_job_id, status_enum, id)`);
 }
 
@@ -199,11 +203,11 @@ async function insertImportRowsInBatches(client, jobId, rows) {
     const params = [];
     let p = 1;
     for (const item of chunk) {
-      values.push(`($${p++}, $${p++}::jsonb, 'PENDING', NULL, NOW(), NULL)`);
+      values.push(`($${p++}, $${p++}::jsonb, 'PENDING', NULL)`);
       params.push(jobId, JSON.stringify(item.raw));
     }
     await client.query(
-      `INSERT INTO import_rows (import_job_id, raw_row_json, status_enum, error_msg, created_at, processed_at)
+      `INSERT INTO import_rows (import_job_id, raw_row_json, status_enum, error_msg)
        VALUES ${values.join(',')}`,
       params
     );
