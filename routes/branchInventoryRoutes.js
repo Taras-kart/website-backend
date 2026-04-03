@@ -4,7 +4,6 @@ const multer = require('multer');
 const XLSX = require('xlsx');
 const pool = require('../db');
 const { put } = require('@vercel/blob');
-const axios = require('axios');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 200 * 1024 * 1024 } });
@@ -28,7 +27,7 @@ const HEADER_ALIASES = {
 
 function normalizeRow(raw) {
   const out = {};
-  for (const [k, v] of Object.entries(raw)) {
+  for (const [k, v] of Object.entries(raw || {})) {
     const key = String(k).trim().toLowerCase();
     out[key] = v;
   }
@@ -42,14 +41,14 @@ function normalizeRow(raw) {
       }
     }
   }
-  if (!out.productname && raw['__EMPTY']) out.productname = raw['__EMPTY'];
-  if (!out.brandname && raw['__EMPTY_1']) out.brandname = raw['__EMPTY_1'];
-  if (out.purchaseqty == null && raw['__EMPTY_2'] != null) out.purchaseqty = raw['__EMPTY_2'];
-  if (!out.eancode && raw['__EMPTY_3']) out.eancode = raw['__EMPTY_3'];
-  if (out.mrp == null && raw['__EMPTY_4'] != null) out.mrp = raw['__EMPTY_4'];
-  if (!out.size && raw['__EMPTY_5']) out.size = raw['__EMPTY_5'];
-  if (!out.colour && raw['__EMPTY_6']) out.colour = raw['__EMPTY_6'];
-  if (!out.pattern && raw['__EMPTY_7']) out.pattern = raw['__EMPTY_7'];
+  if (!out.productname && raw && raw.__EMPTY) out.productname = raw.__EMPTY;
+  if (!out.brandname && raw && raw.__EMPTY_1) out.brandname = raw.__EMPTY_1;
+  if (out.purchaseqty == null && raw && raw.__EMPTY_2 != null) out.purchaseqty = raw.__EMPTY_2;
+  if (!out.eancode && raw && raw.__EMPTY_3) out.eancode = raw.__EMPTY_3;
+  if (out.mrp == null && raw && raw.__EMPTY_4 != null) out.mrp = raw.__EMPTY_4;
+  if (!out.size && raw && raw.__EMPTY_5) out.size = raw.__EMPTY_5;
+  if (!out.colour && raw && raw.__EMPTY_6) out.colour = raw.__EMPTY_6;
+  if (!out.pattern && raw && raw.__EMPTY_7) out.pattern = raw.__EMPTY_7;
   return out;
 }
 
@@ -60,18 +59,21 @@ function cleanText(v) {
 
 function toNumOrNull(v) {
   if (v === '' || v == null) return null;
-  const n = parseFloat(String(v).toString().replace(/[₹, ]+/g, ''));
+  const n = parseFloat(String(v).replace(/[₹, ]+/g, ''));
   return Number.isFinite(n) ? n : null;
 }
 
 function toIntOrZero(v) {
-  const n = parseInt(String(v).toString().replace(/[₹, ]+/g, ''), 10);
+  const n = parseInt(String(v).replace(/[₹, ]+/g, ''), 10);
   return Number.isFinite(n) ? n : 0;
 }
 
 function normGender(v) {
   const s = String(v || '').trim().toUpperCase();
   if (s === 'MEN' || s === 'WOMEN' || s === 'KIDS') return s;
+  if (s === 'MAN' || s === 'MALE' || s === 'MENS' || s === "MEN'S") return 'MEN';
+  if (s === 'WOMAN' || s === 'FEMALE' || s === 'LADIES' || s === 'WOMENS' || s === "WOMEN'S") return 'WOMEN';
+  if (s === 'CHILD' || s === 'CHILDREN' || s === 'BOYS' || s === 'GIRLS' || s === 'KID') return 'KIDS';
   return '';
 }
 
@@ -94,7 +96,7 @@ function extractEANFromName(name) {
 }
 
 function isSummaryOrBlankRow(raw, ProductName, BrandName, SIZE, COLOUR, row) {
-  const summary = cleanText(raw['Stock Summary'] || raw['stock summary'] || '');
+  const summary = cleanText((raw && (raw['Stock Summary'] || raw['stock summary'])) || '');
   const allMainEmpty = !ProductName && !BrandName && !SIZE && !COLOUR;
   const hasAnyDataField =
     cleanText(row.eancode) ||
@@ -127,6 +129,87 @@ function shouldSkipBusinessRow(ProductName, BrandName, MRP, RSalePrice) {
   return isDefaultText(ProductName) || isDefaultText(BrandName);
 }
 
+async function ensureImportRowsTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS import_rows (
+      id BIGSERIAL PRIMARY KEY,
+      import_job_id BIGINT NOT NULL REFERENCES import_jobs(id) ON DELETE CASCADE,
+      raw_row_json JSONB NOT NULL,
+      status_enum TEXT NOT NULL DEFAULT 'PENDING',
+      error_msg TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      processed_at TIMESTAMPTZ
+    )
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_import_rows_job_status_id ON import_rows(import_job_id, status_enum, id)`);
+}
+
+function rowToPreparedRecord(raw) {
+  const row = normalizeRow(raw);
+  const ProductName = cleanText(row.productname);
+  const BrandName = cleanText(row.brandname);
+  const SIZE = cleanText(row.size);
+  const COLOUR = cleanText(row.colour);
+  const PATTERN = cleanText(row.pattern) || null;
+  const FITT = cleanText(row.fitt) || null;
+  const MarkCode = cleanText(row.markcode) || null;
+  const MRP = toNumOrNull(row.mrp);
+  const RSalePrice = toNumOrNull(row.rsaleprice);
+  const CostPrice = toNumOrNull(row.costprice) ?? 0;
+  const PurchaseQty = toIntOrZero(row.purchaseqty);
+  const B2CDiscount = toNumOrNull(row.b2cdiscount) ?? 0;
+  const B2BDiscount = toNumOrNull(row.b2bdiscount) ?? 0;
+  let EANCode = row.eancode;
+  if (EANCode != null && EANCode !== '') EANCode = cleanText(EANCode);
+
+  return {
+    raw,
+    ProductName,
+    BrandName,
+    SIZE,
+    COLOUR,
+    PATTERN,
+    FITT,
+    MarkCode,
+    MRP,
+    RSalePrice,
+    CostPrice,
+    PurchaseQty,
+    B2CDiscount,
+    B2BDiscount,
+    EANCode
+  };
+}
+
+function shouldQueueRow(prepared) {
+  if (isSummaryOrBlankRow(prepared.raw, prepared.ProductName, prepared.BrandName, prepared.SIZE, prepared.COLOUR, normalizeRow(prepared.raw))) {
+    return false;
+  }
+  if (shouldSkipBusinessRow(prepared.ProductName, prepared.BrandName, prepared.MRP, prepared.RSalePrice)) {
+    return false;
+  }
+  return true;
+}
+
+async function insertImportRowsInBatches(client, jobId, rows) {
+  const chunkSize = 250;
+  for (let i = 0; i < rows.length; i += chunkSize) {
+    const chunk = rows.slice(i, i + chunkSize);
+    const values = [];
+    const params = [];
+    let p = 1;
+    for (const item of chunk) {
+      values.push(`($${p++}, $${p++}::jsonb, 'PENDING', NULL, NOW(), NULL)`);
+      params.push(jobId, JSON.stringify(item.raw));
+    }
+    await client.query(
+      `INSERT INTO import_rows (import_job_id, raw_row_json, status_enum, error_msg, created_at, processed_at)
+       VALUES ${values.join(',')}`,
+      params
+    );
+  }
+}
+
 router.get('/:branchId/import-jobs', requireBranchAuth, async (req, res) => {
   const branchId = parseInt(req.params.branchId, 10);
   if (!branchId || branchId !== Number(req.user.branch_id)) return res.status(403).json({ message: 'Forbidden' });
@@ -153,6 +236,7 @@ router.get('/:branchId/import-rows', requireBranchAuth, async (req, res) => {
   const limit = Math.max(1, Math.min(500, parseInt(req.query.limit || '200', 10)));
   const status = String(req.query.status || '').trim();
   try {
+    await ensureImportRowsTable();
     let job;
     if (jobId) {
       const r = await pool.query(`SELECT * FROM import_jobs WHERE id=$1 AND branch_id=$2`, [jobId, branchId]);
@@ -209,93 +293,150 @@ router.post('/:branchId/import', requireBranchAuth, upload.single('file'), async
   if (!gender) return res.status(400).json({ message: 'Category is required (MEN/WOMEN/KIDS)' });
   const token = process.env.BLOB_READ_WRITE_TOKEN || process.env.VERCEL_BLOB_READ_WRITE_TOKEN || process.env.VERCEL_BLOB_RW_TOKEN;
   if (!token) return res.status(500).json({ message: 'Upload store not configured' });
+
+  const client = await pool.connect();
   try {
+    await ensureImportRowsTable();
+
+    const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
+    const wsName = wb.SheetNames && wb.SheetNames[0];
+    if (!wsName) return res.status(400).json({ message: 'No worksheet in file' });
+
+    const allRows = XLSX.utils.sheet_to_json(wb.Sheets[wsName], { defval: '' });
+    const preparedRows = [];
+    for (const raw of allRows) {
+      const prepared = rowToPreparedRecord(raw);
+      if (shouldQueueRow(prepared)) preparedRows.push(prepared);
+    }
+
     const ext = (req.file.originalname.split('.').pop() || 'xlsx').toLowerCase();
     const name = `${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
     const stored = await put(name, req.file.buffer, { access: 'public', contentType: req.file.mimetype, token });
-    const { rows } = await pool.query(
+
+    await client.query('BEGIN');
+
+    const { rows } = await client.query(
       `INSERT INTO import_jobs (file_name, file_url, uploaded_by, status_enum, rows_total, rows_success, rows_error, branch_id, gender)
-       VALUES ($1, $2, $3, 'PENDING', 0, 0, 0, $4, $5)
+       VALUES ($1, $2, $3, 'PENDING', $4, 0, 0, $5, $6)
        RETURNING id, file_name, file_url, uploaded_by, status_enum, rows_total, rows_success, rows_error, uploaded_at, completed_at, branch_id, gender`,
-      [req.file.originalname || name, stored.url, req.user.id, branchId, gender]
+      [req.file.originalname || name, stored.url, req.user.id, preparedRows.length, branchId, gender]
     );
-    res.status(201).json(rows[0]);
-  } catch {
-    res.status(500).json({ message: 'Server error' });
+
+    const job = rows[0];
+
+    if (preparedRows.length) {
+      await insertImportRowsInBatches(client, job.id, preparedRows);
+    }
+
+    await client.query('COMMIT');
+    res.status(201).json(job);
+  } catch (e) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ message: e.message || 'Server error' });
+  } finally {
+    client.release();
   }
 });
 
 router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, res) => {
   const branchId = parseInt(req.params.branchId, 10);
   const jobId = parseInt(req.params.jobId, 10);
-  const start = Math.max(0, parseInt(req.query.start || '0', 10));
-  const limit = Math.max(1, Math.min(500, parseInt(req.query.limit || '200', 10)));
+  const limit = Math.max(1, Math.min(25, parseInt(req.query.limit || '25', 10)));
+
   if (!branchId || branchId !== Number(req.user.branch_id)) return res.status(403).json({ message: 'Forbidden' });
+
   try {
+    await ensureImportRowsTable();
+
     const j = await pool.query(
       `SELECT id, file_url, status_enum, rows_total, rows_success, rows_error, gender
-       FROM import_jobs WHERE id = $1 AND branch_id = $2`,
+       FROM import_jobs
+       WHERE id = $1 AND branch_id = $2`,
       [jobId, branchId]
     );
+
     if (!j.rows.length) return res.status(404).json({ message: 'Job not found' });
+
     const job = j.rows[0];
-    if (!job.file_url) return res.status(400).json({ message: 'Job has no file_url' });
     const st = String(job.status_enum || '').toUpperCase();
+
     if (st === 'COMPLETE' || st === 'PARTIAL' || st === 'FAILED') {
-      return res.json({ done: true, processed: 0, nextStart: start, ok: 0, err: 0, totalRows: job.rows_total || 0 });
+      return res.json({
+        done: true,
+        processed: 0,
+        nextStart: (job.rows_success || 0) + (job.rows_error || 0),
+        ok: 0,
+        err: 0,
+        totalRows: job.rows_total || 0
+      });
     }
-    const gender = normGender(job.gender);
-    const resp = await axios.get(job.file_url, { responseType: 'arraybuffer' });
-    const buf = Buffer.from(resp.data);
-    const wb = XLSX.read(buf, { type: 'buffer' });
-    const wsName = wb.SheetNames && wb.SheetNames[0];
-    if (!wsName) return res.status(400).json({ message: 'No worksheet in file' });
-    const allRows = XLSX.utils.sheet_to_json(wb.Sheets[wsName], { defval: '' });
-    const totalRows = allRows.length;
-    const slice = allRows.slice(start, start + limit);
+
+    const client = await pool.connect();
     let ok = 0;
     let err = 0;
     const errMap = new Map();
     const errSamples = [];
-    const client = await pool.connect();
+
     try {
-      for (const raw of slice) {
-        const row = normalizeRow(raw);
-        const ProductName = cleanText(row.productname);
-        const BrandName = cleanText(row.brandname);
-        const SIZE = cleanText(row.size);
-        const COLOUR = cleanText(row.colour);
-        const PATTERN = cleanText(row.pattern) || null;
-        const FITT = cleanText(row.fitt) || null;
-        const MarkCode = cleanText(row.markcode) || null;
-        const MRP = toNumOrNull(row.mrp);
-        const RSalePrice = toNumOrNull(row.rsaleprice);
-        const CostPrice = toNumOrNull(row.costprice) ?? 0;
-        const PurchaseQty = toIntOrZero(row.purchaseqty);
-        const B2CDiscount = toNumOrNull(row.b2cdiscount) ?? 0;
-        const B2BDiscount = toNumOrNull(row.b2bdiscount) ?? 0;
-        let EANCode = row.eancode;
-        if (EANCode != null && EANCode !== '') EANCode = cleanText(EANCode);
-        if (isSummaryOrBlankRow(raw, ProductName, BrandName, SIZE, COLOUR, row)) {
-          continue;
-        }
-        if (shouldSkipBusinessRow(ProductName, BrandName, MRP, RSalePrice)) {
-          continue;
-        }
-        if (!ProductName || !BrandName || !SIZE || !COLOUR) {
+      const batch = await client.query(
+        `SELECT id, raw_row_json
+         FROM import_rows
+         WHERE import_job_id = $1 AND status_enum = 'PENDING'
+         ORDER BY id ASC
+         LIMIT $2`,
+        [jobId, limit]
+      );
+
+      const rowsToProcess = batch.rows;
+
+      if (!rowsToProcess.length) {
+        const finalSuccess = job.rows_success || 0;
+        const finalError = job.rows_error || 0;
+        const finalStatus = finalSuccess === 0 && finalError > 0 ? 'FAILED' : finalError > 0 ? 'PARTIAL' : 'COMPLETE';
+
+        await pool.query(
+          `UPDATE import_jobs
+           SET status_enum = $1,
+               completed_at = NOW()
+           WHERE id = $2`,
+          [finalStatus, jobId]
+        );
+
+        return res.json({
+          done: true,
+          processed: 0,
+          nextStart: finalSuccess + finalError,
+          ok: 0,
+          err: 0,
+          totalRows: job.rows_total || 0
+        });
+      }
+
+      const gender = normGender(job.gender);
+
+      for (const batchRow of rowsToProcess) {
+        const raw = batchRow.raw_row_json || {};
+        const prepared = rowToPreparedRecord(raw);
+
+        if (!prepared.ProductName || !prepared.BrandName || !prepared.SIZE || !prepared.COLOUR) {
           const msg = 'Missing required fields (ProductName/BrandName/SIZE/COLOUR)';
-          err++;
           await client.query(
-            `INSERT INTO import_rows (import_job_id, raw_row_json, status_enum, error_msg)
-             VALUES ($1, $2::jsonb, $3, $4)`,
-            [jobId, JSON.stringify(raw), 'ERROR', msg]
+            `UPDATE import_rows
+             SET status_enum = 'ERROR',
+                 error_msg = $2,
+                 processed_at = NOW()
+             WHERE id = $1`,
+            [batchRow.id, msg]
           );
+          err += 1;
           errMap.set(msg, (errMap.get(msg) || 0) + 1);
           if (errSamples.length < 5) errSamples.push({ row: raw, error: msg });
           continue;
         }
+
         try {
           await client.query('BEGIN');
+
           const pRes = await client.query(
             `INSERT INTO products (name, brand_name, pattern_code, fit_type, mark_code, gender)
              VALUES ($1, $2, $3, $4, $5, $6)
@@ -303,49 +444,71 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
              DO UPDATE SET fit_type = EXCLUDED.fit_type,
                            mark_code = EXCLUDED.mark_code
              RETURNING id`,
-            [ProductName, BrandName, PATTERN, FITT, MarkCode, gender || null]
+            [prepared.ProductName, prepared.BrandName, prepared.PATTERN, prepared.FITT, prepared.MarkCode, gender || null]
           );
+
           const productId = pRes.rows[0].id;
+
           const vRes = await client.query(
             `INSERT INTO product_variants (product_id, size, colour, is_active, mrp, sale_price, cost_price, b2c_discount_pct, b2b_discount_pct)
              VALUES ($1, $2, $3, TRUE, $4, $5, $6, $7, $8)
              ON CONFLICT (product_id, size, colour)
-             DO UPDATE SET is_active = TRUE, mrp = EXCLUDED.mrp, sale_price = EXCLUDED.sale_price, cost_price = EXCLUDED.cost_price, b2c_discount_pct = EXCLUDED.b2c_discount_pct, b2b_discount_pct = EXCLUDED.b2b_discount_pct
+             DO UPDATE SET is_active = TRUE,
+                           mrp = EXCLUDED.mrp,
+                           sale_price = EXCLUDED.sale_price,
+                           cost_price = EXCLUDED.cost_price,
+                           b2c_discount_pct = EXCLUDED.b2c_discount_pct,
+                           b2b_discount_pct = EXCLUDED.b2b_discount_pct
              RETURNING id`,
-            [productId, SIZE, COLOUR, MRP, RSalePrice, CostPrice, B2CDiscount, B2BDiscount]
+            [productId, prepared.SIZE, prepared.COLOUR, prepared.MRP, prepared.RSalePrice, prepared.CostPrice, prepared.B2CDiscount, prepared.B2BDiscount]
           );
+
           const variantId = vRes.rows[0].id;
-          if (EANCode) {
+
+          if (prepared.EANCode) {
             await client.query(
               `INSERT INTO barcodes (variant_id, ean_code)
                VALUES ($1, $2)
-               ON CONFLICT (ean_code) DO UPDATE SET variant_id = EXCLUDED.variant_id`,
-              [variantId, EANCode]
+               ON CONFLICT (ean_code)
+               DO UPDATE SET variant_id = EXCLUDED.variant_id`,
+              [variantId, prepared.EANCode]
             );
           }
+
           await client.query(
             `INSERT INTO branch_variant_stock (branch_id, variant_id, on_hand, reserved, is_active)
              VALUES ($1, $2, $3, 0, TRUE)
              ON CONFLICT (branch_id, variant_id)
-             DO UPDATE SET on_hand = branch_variant_stock.on_hand + EXCLUDED.on_hand, is_active = TRUE`,
-            [branchId, variantId, PurchaseQty]
+             DO UPDATE SET on_hand = branch_variant_stock.on_hand + EXCLUDED.on_hand,
+                           is_active = TRUE`,
+            [branchId, variantId, prepared.PurchaseQty]
           );
+
           await client.query(
-            `INSERT INTO import_rows (import_job_id, raw_row_json, status_enum, error_msg)
-             VALUES ($1, $2::jsonb, $3, $4)`,
-            [jobId, JSON.stringify(raw), 'OK', null]
+            `UPDATE import_rows
+             SET status_enum = 'OK',
+                 error_msg = NULL,
+                 processed_at = NOW()
+             WHERE id = $1`,
+            [batchRow.id]
           );
+
           await client.query('COMMIT');
-          ok++;
+          ok += 1;
         } catch (e) {
           await client.query('ROLLBACK');
-          err++;
           const msg = String(e.message || 'error').slice(0, 500);
+
           await client.query(
-            `INSERT INTO import_rows (import_job_id, raw_row_json, status_enum, error_msg)
-             VALUES ($1, $2::jsonb, $3, $4)`,
-            [jobId, JSON.stringify(raw), 'ERROR', msg]
+            `UPDATE import_rows
+             SET status_enum = 'ERROR',
+                 error_msg = $2,
+                 processed_at = NOW()
+             WHERE id = $1`,
+            [batchRow.id, msg]
           );
+
+          err += 1;
           errMap.set(msg, (errMap.get(msg) || 0) + 1);
           if (errSamples.length < 5) errSamples.push({ row: raw, error: msg });
         }
@@ -353,46 +516,63 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
     } finally {
       client.release();
     }
-    const newSuccess = (job.rows_success || 0) + ok;
-    const newError = (job.rows_error || 0) + err;
-    const rowsDone = start + slice.length;
-    const isDone = rowsDone >= totalRows;
+
+    const currentStatusRow = await pool.query(
+      `SELECT
+         COUNT(*) FILTER (WHERE status_enum = 'PENDING')::int AS pending_count,
+         COUNT(*) FILTER (WHERE status_enum = 'OK')::int AS ok_count,
+         COUNT(*) FILTER (WHERE status_enum = 'ERROR')::int AS error_count
+       FROM import_rows
+       WHERE import_job_id = $1`,
+      [jobId]
+    );
+
+    const counts = currentStatusRow.rows[0];
+    const pendingCount = counts.pending_count || 0;
+    const okCount = counts.ok_count || 0;
+    const errorCount = counts.error_count || 0;
+    const processedCount = okCount + errorCount;
+    const isDone = pendingCount === 0;
+
     let finalStatus = 'PENDING';
     if (isDone) {
-      if (newSuccess === 0 && newError > 0) {
+      if (okCount === 0 && errorCount > 0) {
         finalStatus = 'FAILED';
-      } else if (newError > 0) {
+      } else if (errorCount > 0) {
         finalStatus = 'PARTIAL';
       } else {
         finalStatus = 'COMPLETE';
       }
     }
+
     await pool.query(
       `UPDATE import_jobs
-         SET rows_total   = $1,
-             rows_success = $2,
-             rows_error   = $3,
-             status_enum  = $4,
-             completed_at = CASE WHEN $4 = 'COMPLETE' OR $4 = 'PARTIAL' OR $4 = 'FAILED' THEN NOW() ELSE completed_at END
+       SET rows_total = $1,
+           rows_success = $2,
+           rows_error = $3,
+           status_enum = $4,
+           completed_at = CASE WHEN $4 IN ('COMPLETE','PARTIAL','FAILED') THEN NOW() ELSE completed_at END
        WHERE id = $5`,
-      [totalRows, newSuccess, newError, finalStatus, jobId]
+      [job.rows_total || 0, okCount, errorCount, finalStatus, jobId]
     );
+
     const error_counts = Array.from(errMap.entries())
       .map(([message, count]) => ({ message, count }))
       .sort((a, b) => b.count - a.count)
       .slice(0, 10);
+
     res.json({
       done: isDone,
-      processed: slice.length,
+      processed: ok + err,
       ok,
       err,
-      totalRows,
-      nextStart: rowsDone,
+      totalRows: job.rows_total || 0,
+      nextStart: processedCount,
       error_counts,
       errors_sample: errSamples
     });
   } catch (e) {
-    res.status(500).json({ message: e?.message || 'Server error' });
+    res.status(500).json({ message: e.message || 'Server error' });
   }
 });
 
