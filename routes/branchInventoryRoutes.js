@@ -8,7 +8,7 @@ const { put } = require('@vercel/blob');
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 200 * 1024 * 1024 } });
 
-const IMPORT_ROW_STATUS_QUEUED = 'QUEUED';
+const IMPORT_ROW_STATUS_CREATED = 'CREATED';
 const IMPORT_ROW_STATUS_OK = 'OK';
 const IMPORT_ROW_STATUS_ERROR = 'ERROR';
 
@@ -210,26 +210,22 @@ async function getAllowedImportRowStatuses() {
   return rows.map(r => r.enumlabel);
 }
 
-function resolveQueuedStatus(enumValues) {
-  if (enumValues.includes('QUEUED')) return 'QUEUED';
-  if (enumValues.includes('PENDING')) return 'PENDING';
-  if (enumValues.includes('WAITING')) return 'WAITING';
+function resolveCreatedStatus(enumValues) {
+  if (enumValues.includes('CREATED')) return 'CREATED';
   return null;
 }
 
 function resolveOkStatus(enumValues) {
   if (enumValues.includes('OK')) return 'OK';
-  if (enumValues.includes('SUCCESS')) return 'SUCCESS';
   return null;
 }
 
 function resolveErrorStatus(enumValues) {
   if (enumValues.includes('ERROR')) return 'ERROR';
-  if (enumValues.includes('FAILED')) return 'FAILED';
   return null;
 }
 
-async function insertImportRowsInBatches(client, jobId, rows, queuedStatus) {
+async function insertImportRowsInBatches(client, jobId, rows, createdStatus) {
   const chunkSize = 250;
   for (let i = 0; i < rows.length; i += chunkSize) {
     const chunk = rows.slice(i, i + chunkSize);
@@ -238,7 +234,7 @@ async function insertImportRowsInBatches(client, jobId, rows, queuedStatus) {
     let p = 1;
     for (const item of chunk) {
       values.push(`($${p++}, $${p++}::jsonb, $${p++}, NULL)`);
-      params.push(jobId, JSON.stringify(item.raw), queuedStatus);
+      params.push(jobId, JSON.stringify(item.raw), createdStatus);
     }
     await client.query(
       `INSERT INTO import_rows (import_job_id, raw_row_json, status_enum, error_msg)
@@ -348,10 +344,10 @@ router.post('/:branchId/import', requireBranchAuth, upload.single('file'), async
     await ensureImportRowsTable();
 
     const enumValues = await getAllowedImportRowStatuses();
-    const queuedStatus = resolveQueuedStatus(enumValues);
+    const createdStatus = resolveCreatedStatus(enumValues);
 
-    if (!queuedStatus) {
-      return res.status(500).json({ message: `import_row_status enum is missing a queued state. Available values: ${enumValues.join(', ')}` });
+    if (!createdStatus) {
+      return res.status(500).json({ message: `import_row_status enum is missing CREATED. Available values: ${enumValues.join(', ')}` });
     }
 
     const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
@@ -382,7 +378,7 @@ router.post('/:branchId/import', requireBranchAuth, upload.single('file'), async
     const job = rows[0];
 
     if (preparedRows.length) {
-      await insertImportRowsInBatches(client, job.id, preparedRows, queuedStatus);
+      await insertImportRowsInBatches(client, job.id, preparedRows, createdStatus);
     }
 
     await client.query('COMMIT');
@@ -406,11 +402,11 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
     await ensureImportRowsTable();
 
     const enumValues = await getAllowedImportRowStatuses();
-    const queuedStatus = resolveQueuedStatus(enumValues);
+    const createdStatus = resolveCreatedStatus(enumValues);
     const okStatus = resolveOkStatus(enumValues);
     const errorStatus = resolveErrorStatus(enumValues);
 
-    if (!queuedStatus || !okStatus || !errorStatus) {
+    if (!createdStatus || !okStatus || !errorStatus) {
       return res.status(500).json({ message: `Unsupported import_row_status enum values: ${enumValues.join(', ')}` });
     }
 
@@ -450,7 +446,7 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
          WHERE import_job_id = $1 AND status_enum = $2
          ORDER BY id ASC
          LIMIT $3`,
-        [jobId, queuedStatus, limit]
+        [jobId, createdStatus, limit]
       );
 
       const rowsToProcess = batch.rows;
@@ -590,7 +586,7 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
          COUNT(*) FILTER (WHERE status_enum = $4)::int AS error_count
        FROM import_rows
        WHERE import_job_id = $1`,
-      [jobId, queuedStatus, okStatus, errorStatus]
+      [jobId, createdStatus, okStatus, errorStatus]
     );
 
     const counts = currentStatusRow.rows[0];
