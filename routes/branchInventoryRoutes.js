@@ -8,6 +8,10 @@ const { put } = require('@vercel/blob');
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 200 * 1024 * 1024 } });
 
+const IMPORT_ROW_STATUS_QUEUED = 'QUEUED';
+const IMPORT_ROW_STATUS_OK = 'OK';
+const IMPORT_ROW_STATUS_ERROR = 'ERROR';
+
 const HEADER_ALIASES = {
   productname: ['product', 'product name', 'item', 'item name', 'productname'],
   brandname: ['brand', 'brand name', 'brandname'],
@@ -135,7 +139,7 @@ async function ensureImportRowsTable() {
       id BIGSERIAL PRIMARY KEY,
       import_job_id BIGINT NOT NULL REFERENCES import_jobs(id) ON DELETE CASCADE,
       raw_row_json JSONB NOT NULL,
-      status_enum TEXT NOT NULL DEFAULT 'PENDING',
+      status_enum TEXT,
       error_msg TEXT
     )
   `);
@@ -143,7 +147,6 @@ async function ensureImportRowsTable() {
   await pool.query(`ALTER TABLE import_rows ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`);
   await pool.query(`ALTER TABLE import_rows ADD COLUMN IF NOT EXISTS processed_at TIMESTAMPTZ`);
   await pool.query(`ALTER TABLE import_rows ADD COLUMN IF NOT EXISTS raw_row_json JSONB`);
-  await pool.query(`ALTER TABLE import_rows ADD COLUMN IF NOT EXISTS status_enum TEXT NOT NULL DEFAULT 'PENDING'`);
   await pool.query(`ALTER TABLE import_rows ADD COLUMN IF NOT EXISTS error_msg TEXT`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_import_rows_job_status_id ON import_rows(import_job_id, status_enum, id)`);
 }
@@ -195,7 +198,38 @@ function shouldQueueRow(prepared) {
   return true;
 }
 
-async function insertImportRowsInBatches(client, jobId, rows) {
+async function getAllowedImportRowStatuses() {
+  const sql = `
+    SELECT enumlabel
+    FROM pg_enum e
+    JOIN pg_type t ON t.oid = e.enumtypid
+    WHERE t.typname = 'import_row_status'
+    ORDER BY enumsortorder
+  `;
+  const { rows } = await pool.query(sql);
+  return rows.map(r => r.enumlabel);
+}
+
+function resolveQueuedStatus(enumValues) {
+  if (enumValues.includes('QUEUED')) return 'QUEUED';
+  if (enumValues.includes('PENDING')) return 'PENDING';
+  if (enumValues.includes('WAITING')) return 'WAITING';
+  return null;
+}
+
+function resolveOkStatus(enumValues) {
+  if (enumValues.includes('OK')) return 'OK';
+  if (enumValues.includes('SUCCESS')) return 'SUCCESS';
+  return null;
+}
+
+function resolveErrorStatus(enumValues) {
+  if (enumValues.includes('ERROR')) return 'ERROR';
+  if (enumValues.includes('FAILED')) return 'FAILED';
+  return null;
+}
+
+async function insertImportRowsInBatches(client, jobId, rows, queuedStatus) {
   const chunkSize = 250;
   for (let i = 0; i < rows.length; i += chunkSize) {
     const chunk = rows.slice(i, i + chunkSize);
@@ -203,8 +237,8 @@ async function insertImportRowsInBatches(client, jobId, rows) {
     const params = [];
     let p = 1;
     for (const item of chunk) {
-      values.push(`($${p++}, $${p++}::jsonb, 'PENDING', NULL)`);
-      params.push(jobId, JSON.stringify(item.raw));
+      values.push(`($${p++}, $${p++}::jsonb, $${p++}, NULL)`);
+      params.push(jobId, JSON.stringify(item.raw), queuedStatus);
     }
     await client.query(
       `INSERT INTO import_rows (import_job_id, raw_row_json, status_enum, error_msg)
@@ -239,8 +273,10 @@ router.get('/:branchId/import-rows', requireBranchAuth, async (req, res) => {
   const offset = Math.max(0, parseInt(req.query.offset || '0', 10));
   const limit = Math.max(1, Math.min(500, parseInt(req.query.limit || '200', 10)));
   const status = String(req.query.status || '').trim();
+
   try {
     await ensureImportRowsTable();
+
     let job;
     if (jobId) {
       const r = await pool.query(`SELECT * FROM import_jobs WHERE id=$1 AND branch_id=$2`, [jobId, branchId]);
@@ -251,13 +287,17 @@ router.get('/:branchId/import-rows', requireBranchAuth, async (req, res) => {
       if (!r.rows.length) return res.json({ job: null, rows: [], nextOffset: offset, total: 0 });
       job = r.rows[0];
     }
+
     const params = [job.id];
     let where = `import_job_id = $1`;
+
     if (status) {
       params.push(status);
       where += ` AND status_enum = $${params.length}`;
     }
+
     const totalQ = await pool.query(`SELECT COUNT(*)::int AS c FROM import_rows WHERE ${where}`, params);
+
     params.push(limit, offset);
     const rowsQ = await pool.query(
       `SELECT id, status_enum, error_msg, raw_row_json
@@ -267,7 +307,9 @@ router.get('/:branchId/import-rows', requireBranchAuth, async (req, res) => {
        LIMIT $${params.length - 1} OFFSET $${params.length}`,
       params
     );
+
     const nextOffset = offset + rowsQ.rows.length;
+
     res.json({
       job: {
         id: job.id,
@@ -293,14 +335,24 @@ router.post('/:branchId/import', requireBranchAuth, upload.single('file'), async
   const branchId = parseInt(req.params.branchId, 10);
   if (!branchId || branchId !== Number(req.user.branch_id)) return res.status(403).json({ message: 'Forbidden' });
   if (!req.file) return res.status(400).json({ message: 'File required' });
+
   const gender = normGender(req.body?.gender);
   if (!gender) return res.status(400).json({ message: 'Category is required (MEN/WOMEN/KIDS)' });
+
   const token = process.env.BLOB_READ_WRITE_TOKEN || process.env.VERCEL_BLOB_READ_WRITE_TOKEN || process.env.VERCEL_BLOB_RW_TOKEN;
   if (!token) return res.status(500).json({ message: 'Upload store not configured' });
 
   const client = await pool.connect();
+
   try {
     await ensureImportRowsTable();
+
+    const enumValues = await getAllowedImportRowStatuses();
+    const queuedStatus = resolveQueuedStatus(enumValues);
+
+    if (!queuedStatus) {
+      return res.status(500).json({ message: `import_row_status enum is missing a queued state. Available values: ${enumValues.join(', ')}` });
+    }
 
     const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
     const wsName = wb.SheetNames && wb.SheetNames[0];
@@ -308,6 +360,7 @@ router.post('/:branchId/import', requireBranchAuth, upload.single('file'), async
 
     const allRows = XLSX.utils.sheet_to_json(wb.Sheets[wsName], { defval: '' });
     const preparedRows = [];
+
     for (const raw of allRows) {
       const prepared = rowToPreparedRecord(raw);
       if (shouldQueueRow(prepared)) preparedRows.push(prepared);
@@ -329,7 +382,7 @@ router.post('/:branchId/import', requireBranchAuth, upload.single('file'), async
     const job = rows[0];
 
     if (preparedRows.length) {
-      await insertImportRowsInBatches(client, job.id, preparedRows);
+      await insertImportRowsInBatches(client, job.id, preparedRows, queuedStatus);
     }
 
     await client.query('COMMIT');
@@ -351,6 +404,15 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
 
   try {
     await ensureImportRowsTable();
+
+    const enumValues = await getAllowedImportRowStatuses();
+    const queuedStatus = resolveQueuedStatus(enumValues);
+    const okStatus = resolveOkStatus(enumValues);
+    const errorStatus = resolveErrorStatus(enumValues);
+
+    if (!queuedStatus || !okStatus || !errorStatus) {
+      return res.status(500).json({ message: `Unsupported import_row_status enum values: ${enumValues.join(', ')}` });
+    }
 
     const j = await pool.query(
       `SELECT id, file_url, status_enum, rows_total, rows_success, rows_error, gender
@@ -385,10 +447,10 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
       const batch = await client.query(
         `SELECT id, raw_row_json
          FROM import_rows
-         WHERE import_job_id = $1 AND status_enum = 'PENDING'
+         WHERE import_job_id = $1 AND status_enum = $2
          ORDER BY id ASC
-         LIMIT $2`,
-        [jobId, limit]
+         LIMIT $3`,
+        [jobId, queuedStatus, limit]
       );
 
       const rowsToProcess = batch.rows;
@@ -426,11 +488,11 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
           const msg = 'Missing required fields (ProductName/BrandName/SIZE/COLOUR)';
           await client.query(
             `UPDATE import_rows
-             SET status_enum = 'ERROR',
-                 error_msg = $2,
+             SET status_enum = $2,
+                 error_msg = $3,
                  processed_at = NOW()
              WHERE id = $1`,
-            [batchRow.id, msg]
+            [batchRow.id, errorStatus, msg]
           );
           err += 1;
           errMap.set(msg, (errMap.get(msg) || 0) + 1);
@@ -490,11 +552,11 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
 
           await client.query(
             `UPDATE import_rows
-             SET status_enum = 'OK',
+             SET status_enum = $2,
                  error_msg = NULL,
                  processed_at = NOW()
              WHERE id = $1`,
-            [batchRow.id]
+            [batchRow.id, okStatus]
           );
 
           await client.query('COMMIT');
@@ -505,11 +567,11 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
 
           await client.query(
             `UPDATE import_rows
-             SET status_enum = 'ERROR',
-                 error_msg = $2,
+             SET status_enum = $2,
+                 error_msg = $3,
                  processed_at = NOW()
              WHERE id = $1`,
-            [batchRow.id, msg]
+            [batchRow.id, errorStatus, msg]
           );
 
           err += 1;
@@ -523,12 +585,12 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
 
     const currentStatusRow = await pool.query(
       `SELECT
-         COUNT(*) FILTER (WHERE status_enum = 'PENDING')::int AS pending_count,
-         COUNT(*) FILTER (WHERE status_enum = 'OK')::int AS ok_count,
-         COUNT(*) FILTER (WHERE status_enum = 'ERROR')::int AS error_count
+         COUNT(*) FILTER (WHERE status_enum = $2)::int AS pending_count,
+         COUNT(*) FILTER (WHERE status_enum = $3)::int AS ok_count,
+         COUNT(*) FILTER (WHERE status_enum = $4)::int AS error_count
        FROM import_rows
        WHERE import_job_id = $1`,
-      [jobId]
+      [jobId, queuedStatus, okStatus, errorStatus]
     );
 
     const counts = currentStatusRow.rows[0];
