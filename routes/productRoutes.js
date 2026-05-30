@@ -287,7 +287,7 @@ async function fetchImageList({ gender, limit }) {
         ELSE NULL
       END
     ) IS NOT NULL
-    ORDER BY RANDOM()
+    ORDER BY v.id DESC
     LIMIT $${limIdx}
   `
   const { rows } = await pool.query(sql, params)
@@ -524,7 +524,7 @@ router.get('/', async (req, res) => {
     const limIdx = params.length - 1
     const offIdx = params.length
 
-    const orderBy = wantRandom ? 'ORDER BY RANDOM()' : 'ORDER BY v.id DESC'
+    const orderBy = 'ORDER BY v.id DESC'
 
     const sql = `
       ${buildProductSelectSql({ where, branchIdx, cloudIdx })}
@@ -660,7 +660,7 @@ router.get('/category/:category', async (req, res) => {
     params.push(cloud)
     const cloudIdx = params.length
 
-    const orderBy = wantRandom ? 'ORDER BY RANDOM()' : 'ORDER BY v.id DESC'
+    const orderBy = 'ORDER BY v.id DESC'
 
     const sql = `
       ${buildProductSelectSql({ where, branchIdx, cloudIdx })}
@@ -694,7 +694,7 @@ router.get('/gender/:gender', async (req, res) => {
     params.push(cloud)
     const cloudIdx = params.length
 
-    const orderBy = wantRandom ? 'ORDER BY RANDOM()' : 'ORDER BY v.id DESC'
+    const orderBy = 'ORDER BY v.id DESC'
 
     const sql = `
       ${buildProductSelectSql({ where, branchIdx, cloudIdx })}
@@ -1039,3 +1039,65 @@ router.delete('/:id(\\d+)', async (req, res) => {
 
 
 module.exports = router
+
+// ==========================================
+// BULK UPDATE ROUTE (Prevents API Spam)
+// ==========================================
+router.put('/bulk-update', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const updates = req.body.updates; // Expecting an array of product changes
+    if (!Array.isArray(updates) || updates.length === 0) {
+      return res.status(400).json({ message: 'No updates provided' });
+    }
+
+    const branchId = getBranchIdFromReq(req);
+    await client.query('BEGIN');
+
+    const results = [];
+
+    for (const item of updates) {
+      const variantId = parseInt(item.id, 10);
+      if (!variantId) continue;
+
+      const gender = toGender(item.category);
+      const stockCount = Math.max(0, parseInt(item.total_count, 10) || 0);
+
+      // Update product table
+      await client.query(
+        `UPDATE products SET name = $1, brand_name = $2, gender = $3 
+         WHERE id = (SELECT product_id FROM product_variants WHERE id = $4 LIMIT 1)`,
+        [item.product_name, item.brand, gender, variantId]
+      );
+
+      // Update variant table
+      await client.query(
+        `UPDATE product_variants SET colour = $1, size = $2, mrp = $3, 
+         b2b_discount_pct = $4, b2c_discount_pct = $5, image_url = COALESCE($6, image_url)
+         WHERE id = $7`,
+        [item.color, item.size, item.original_price_b2b || item.original_price_b2c, 
+         item.discount_b2b || 0, item.discount_b2c || 0, item.image_url || null, variantId]
+      );
+
+      // Update branch stock
+      if (branchId) {
+        await client.query(
+          `INSERT INTO branch_variant_stock (variant_id, branch_id, on_hand, reserved, is_active)
+           VALUES ($1, $2, $3, 0, TRUE)
+           ON CONFLICT (variant_id, branch_id) DO UPDATE SET on_hand = $3`,
+          [variantId, branchId, stockCount]
+        );
+      }
+      
+      results.push({ id: variantId, status: 'updated' });
+    }
+
+    await client.query('COMMIT');
+    res.json({ message: 'Bulk update successful', updatedCount: results.length });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ message: 'Bulk update failed', error: err.message });
+  } finally {
+    client.release();
+  }
+});

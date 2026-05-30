@@ -148,6 +148,18 @@ class Shiprocket {
     return data
   }
 
+  async listOrders(page = 1) {
+    const { data } = await this.api('get', '/orders', { per_page: 50, page })
+    return data
+  }
+
+  async trackOrder(orderId, channelId) {
+    const params = { order_id: orderId }
+    if (channelId) params.channel_id = channelId
+    const { data } = await this.api('get', '/courier/track', params)
+    return data
+  }
+
   async cancelOrders({ order_ids }) {
     const ids = Array.isArray(order_ids) ? order_ids : [order_ids]
     if (!ids.length) return null
@@ -157,6 +169,3 @@ class Shiprocket {
 }
 
 module.exports = Shiprocket
-
-
-

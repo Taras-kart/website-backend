@@ -7,14 +7,54 @@ const FORCE_BRANCH_ID =
     : null
 
 function haversineKm(a, b) {
+  // Safety net: if any coordinate is missing, return Infinity to push it to the bottom
+  if (a.lat == null || a.lng == null || b.lat == null || b.lng == null) return Infinity;
+
   const toRad = (d) => (d * Math.PI) / 180
   const R = 6371
-  const dLat = toRad((b.lat || 0) - (a.lat || 0))
-  const dLon = toRad((b.lng || 0) - (a.lng || 0))
-  const lat1 = toRad(a.lat || 0)
-  const lat2 = toRad(b.lat || 0)
+  const dLat = toRad(b.lat - a.lat)
+  const dLon = toRad(b.lng - a.lng)
+  const lat1 = toRad(a.lat)
+  const lat2 = toRad(b.lat)
   const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2
   return 2 * R * Math.asin(Math.sqrt(h))
+}
+
+function pickBestBranch(rows, sale, customerLoc) {
+  if (!rows.length) return null
+
+  if (FORCE_BRANCH_ID != null) {
+    const forced = rows.find((r) => Number(r.id) === Number(FORCE_BRANCH_ID))
+    if (forced) return forced.id
+    return null
+  }
+
+  if (sale.branch_id) {
+    const exact = rows.find((r) => Number(r.id) === Number(sale.branch_id))
+    if (exact) return exact.id
+  }
+
+  const pincode = sale.shipping_address?.pincode || sale.pincode || null
+  const samePin = pincode ? rows.filter((r) => String(r.pincode) === String(pincode)) : []
+  const poolRows = samePin.length ? samePin : rows
+
+  if (customerLoc.lat != null && customerLoc.lng != null) {
+    const sorted = poolRows
+      .map((r) => ({
+        r,
+        d: haversineKm({ lat: r.lat, lng: r.lng }, customerLoc)
+      }))
+      .sort((a, b) => {
+        // Safely sort even if multiple distances are Infinity
+        if (a.d === Infinity && b.d === Infinity) return 0;
+        if (a.d === Infinity) return 1;
+        if (b.d === Infinity) return -1;
+        return a.d - b.d;
+      })
+    return sorted[0].r.id
+  }
+
+  return poolRows[0].id
 }
 
 async function customerLocFromSale(sale, db) {

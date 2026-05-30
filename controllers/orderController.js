@@ -1,42 +1,35 @@
-const { listOrders, trackByOrderId } = require('../services/shiprocketClient');
-function toUiOrder(o) {
-  const p = (o.products && o.products[0]) || {};
-  return {
-    id: o.id,
-    name: p.name || o.channel_order_id || 'Order',
-    brand: p.brand || o.channel || 'Shiprocket',
-    image: p.image || '/images/placeholder.png',
-    offerPrice: Number(o.total) || 0,
-    originalPrice: o.sub_total ? Number(o.sub_total) : undefined,
-    date: o.created_at ? new Date(o.created_at).toLocaleDateString('en-IN') : '',
-    status: o.status || 'Order Placed'
-  };
-}
+const { trackByOrderId } = require('../services/shiprocketClient');
+const pool = require('../db');
 
 exports.getMyOrders = async (req, res) => {
   try {
     const { email, phone } = req.query;
 
-    const all = [];
-    for (let page = 1; page <= 5; page++) {
-      const resp = await listOrders(page);
-      const rows = Array.isArray(resp?.data) ? resp.data : [];
-      if (!rows.length) break;
-      all.push(...rows);
-    }
+    if (!email && !phone) return res.json({ count: 0, items: [] });
 
-    const filtered = all.filter(o => {
-      const ce = (o.customer_email || '').toLowerCase();
-      const cp = (o.customer_phone || '').replace(/\D/g, '');
-      const okE = email ? ce === String(email).toLowerCase() : true;
-      const okP = phone ? cp.endsWith(String(phone).replace(/\D/g, '')) : true;
-      return okE && okP;
-    });
+    // Query local PostgreSQL instead of Shiprocket
+    const { rows } = await pool.query(
+      `SELECT * FROM sales 
+       WHERE LOWER(customer_email) = LOWER($1) 
+          OR customer_mobile = $2 
+       ORDER BY created_at DESC`,
+      [email || '', phone || '']
+    );
 
-    res.json({ count: filtered.length, items: filtered.map(toUiOrder) });
+    const formattedOrders = rows.map(o => ({
+      id: o.id,
+      name: `Order #${String(o.id).slice(0, 8)}`,
+      brand: 'Taras Kart',
+      image: '/images/placeholder.jpg', // Safe fallback image
+      offerPrice: Number(o.total || (o.totals && o.totals.payable) || 0),
+      date: o.created_at ? new Date(o.created_at).toLocaleDateString('en-IN') : '',
+      status: o.status || 'PLACED'
+    }));
+
+    res.json({ count: formattedOrders.length, items: formattedOrders });
   } catch (err) {
-    console.error('getMyOrders error', err?.response?.data || err);
-    res.status(500).json({ error: 'Failed to fetch orders from Shiprocket' });
+    console.error('getMyOrders error', err);
+    res.status(500).json({ error: 'Failed to fetch orders' });
   }
 };
 

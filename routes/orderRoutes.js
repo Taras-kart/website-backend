@@ -38,68 +38,47 @@ router.post('/web/place', async (req, res) => {
     return res.status(400).json({ message: 'Invalid items (variant_id/qty)' })
   }
 
-  const cartJson = JSON.stringify(
+const cartJson = JSON.stringify(
     normalizedItems.map((i) => ({ variant_id: i.variant_id, qty: i.qty }))
   )
+
+  const agg = new Map()
+  for (const it of normalizedItems) {
+    agg.set(it.variant_id, (agg.get(it.variant_id) || 0) + it.qty)
+  }
+  const variantIds = Array.from(agg.keys())
+  const providedBranchId = Number(body.branch_id || 0) || null
+
 
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
+    let chosenBranchId = providedBranchId;
 
-    const branchQ = await client.query(
-      `
-      WITH cart AS (
-        SELECT * FROM jsonb_to_recordset($1::jsonb)
-        AS x(variant_id int, qty int)
-      )
-      SELECT s.branch_id
-      FROM stocks s
-      JOIN cart c ON c.variant_id = s.variant_id
-      WHERE s.qty >= c.qty
-      GROUP BY s.branch_id
-      HAVING COUNT(*) = (SELECT COUNT(*) FROM cart)
-      ORDER BY s.branch_id ASC
-      LIMIT 1
-      `,
-      [cartJson]
-    )
+    // Verify global stock availability across ALL branches using the correct table
+    for (const vId of variantIds) {
+      const qty = Number(agg.get(vId) || 0);
+      const stockQ = await client.query(
+        `SELECT SUM(GREATEST(COALESCE(on_hand, 0) - COALESCE(reserved, 0), 0)) as avail,
+                MAX(branch_id) as sample_branch
+         FROM branch_variant_stock
+         WHERE variant_id = $1 AND is_active = true`,
+        [vId]
+      );
 
-    const chosenBranchId = branchQ.rows?.[0]?.branch_id || null
-    if (!chosenBranchId) {
-      await client.query('ROLLBACK')
-      return res.status(400).json({
-        message: 'Stock not available in a single branch for all items'
-      })
-    }
-
-    for (const it of normalizedItems) {
-      const lockQ = await client.query(
-        `
-        SELECT qty
-        FROM stocks
-        WHERE branch_id = $1 AND variant_id = $2
-        FOR UPDATE
-        `,
-        [chosenBranchId, it.variant_id]
-      )
-
-      const available = Number(lockQ.rows?.[0]?.qty || 0)
-      if (available < it.qty) {
-        await client.query('ROLLBACK')
-        return res.status(400).json({
-          message: `Insufficient stock for variant ${it.variant_id} in branch ${chosenBranchId}`
-        })
+      const avail = Number(stockQ.rows[0]?.avail || 0);
+      if (avail < qty) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ message: `Insufficient stock. Only ${avail} left globally for this variant.` });
       }
 
-      await client.query(
-        `
-        UPDATE stocks
-        SET qty = qty - $1
-        WHERE branch_id = $2 AND variant_id = $3
-        `,
-        [it.qty, chosenBranchId, it.variant_id]
-      )
+      // Pick a primary branch for the main sales record if none provided
+      if (!chosenBranchId && stockQ.rows[0]?.sample_branch) {
+        chosenBranchId = stockQ.rows[0].sample_branch;
+      }
     }
+
+    if (!chosenBranchId) chosenBranchId = 1; // Failsafe fallback
 
     const totalPayable =
       totals && totals.payable != null ? Number(totals.payable) : null
