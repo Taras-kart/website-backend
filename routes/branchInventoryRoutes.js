@@ -246,7 +246,8 @@ async function insertImportRowsInBatches(client, jobId, rows, createdStatus) {
 
 router.get('/:branchId/import-jobs', requireBranchAuth, async (req, res) => {
   const branchId = parseInt(req.params.branchId, 10);
-  if (!branchId || branchId !== Number(req.user.branch_id)) return res.status(403).json({ message: 'Forbidden' });
+  const isSuperAdmin = String(req.user?.role || req.user?.role_enum || '').toUpperCase() === 'SUPER_ADMIN';
+if (!isSuperAdmin && (!branchId || branchId !== Number(req.user.branch_id))) return res.status(403).json({ message: 'Forbidden' });
   try {
     const { rows } = await pool.query(
       `SELECT id, file_name, file_url, uploaded_by, status_enum, rows_total, rows_success, rows_error, uploaded_at, completed_at, branch_id, gender
@@ -264,7 +265,8 @@ router.get('/:branchId/import-jobs', requireBranchAuth, async (req, res) => {
 
 router.get('/:branchId/import-rows', requireBranchAuth, async (req, res) => {
   const branchId = parseInt(req.params.branchId, 10);
-  if (!branchId || branchId !== Number(req.user.branch_id)) return res.status(403).json({ message: 'Forbidden' });
+  const isSuperAdmin = String(req.user?.role || req.user?.role_enum || '').toUpperCase() === 'SUPER_ADMIN';
+if (!isSuperAdmin && (!branchId || branchId !== Number(req.user.branch_id))) return res.status(403).json({ message: 'Forbidden' });
   const jobId = req.query.jobId ? parseInt(req.query.jobId, 10) : null;
   const offset = Math.max(0, parseInt(req.query.offset || '0', 10));
   const limit = Math.max(1, Math.min(500, parseInt(req.query.limit || '200', 10)));
@@ -329,7 +331,8 @@ router.get('/:branchId/import-rows', requireBranchAuth, async (req, res) => {
 
 router.post('/:branchId/import', requireBranchAuth, upload.single('file'), async (req, res) => {
   const branchId = parseInt(req.params.branchId, 10);
-  if (!branchId || branchId !== Number(req.user.branch_id)) return res.status(403).json({ message: 'Forbidden' });
+  const isSuperAdmin = String(req.user?.role || req.user?.role_enum || '').toUpperCase() === 'SUPER_ADMIN';
+if (!isSuperAdmin && (!branchId || branchId !== Number(req.user.branch_id))) return res.status(403).json({ message: 'Forbidden' });
   if (!req.file) return res.status(400).json({ message: 'File required' });
 
   const gender = normGender(req.body?.gender);
@@ -396,7 +399,8 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
   const jobId = parseInt(req.params.jobId, 10);
   const limit = Math.max(1, Math.min(25, parseInt(req.query.limit || '25', 10)));
 
-  if (!branchId || branchId !== Number(req.user.branch_id)) return res.status(403).json({ message: 'Forbidden' });
+  const isSuperAdmin = String(req.user?.role || req.user?.role_enum || '').toUpperCase() === 'SUPER_ADMIN';
+if (!isSuperAdmin && (!branchId || branchId !== Number(req.user.branch_id))) return res.status(403).json({ message: 'Forbidden' });
 
   try {
     await ensureImportRowsTable();
@@ -640,7 +644,8 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
 
 router.post('/:branchId/images/confirm', requireBranchAuth, async (req, res) => {
   const branchId = parseInt(req.params.branchId, 10);
-  if (!branchId || branchId !== Number(req.user.branch_id)) return res.status(403).json({ message: 'Forbidden' });
+  const isSuperAdmin = String(req.user?.role || req.user?.role_enum || '').toUpperCase() === 'SUPER_ADMIN';
+if (!isSuperAdmin && (!branchId || branchId !== Number(req.user.branch_id))) return res.status(403).json({ message: 'Forbidden' });
   const images = Array.isArray(req.body?.images) ? req.body.images : [];
   if (!images.length) return res.status(400).json({ message: 'No images' });
   try {
@@ -689,7 +694,8 @@ router.post('/:branchId/images/confirm', requireBranchAuth, async (req, res) => 
 
 router.get('/:branchId/stock', requireBranchAuth, async (req, res) => {
   const branchId = parseInt(req.params.branchId, 10);
-  if (!branchId || branchId !== Number(req.user.branch_id)) return res.status(403).json({ message: 'Forbidden' });
+  const isSuperAdmin = String(req.user?.role || req.user?.role_enum || '').toUpperCase() === 'SUPER_ADMIN';
+if (!isSuperAdmin && (!branchId || branchId !== Number(req.user.branch_id))) return res.status(403).json({ message: 'Forbidden' });
   const gender = normGender(req.query.gender || '');
   try {
     const params = [branchId];
@@ -736,7 +742,8 @@ router.get('/:branchId/stock', requireBranchAuth, async (req, res) => {
 
 router.get('/:branchId/discounts', requireBranchAuth, async (req, res) => {
   const branchId = parseInt(req.params.branchId, 10);
-  if (!branchId || branchId !== Number(req.user.branch_id)) return res.status(403).json({ message: 'Forbidden' });
+  const isSuperAdmin = String(req.user?.role || req.user?.role_enum || '').toUpperCase() === 'SUPER_ADMIN';
+if (!isSuperAdmin && (!branchId || branchId !== Number(req.user.branch_id))) return res.status(403).json({ message: 'Forbidden' });
   try {
     const { rows } = await pool.query(
       `SELECT
@@ -775,7 +782,8 @@ router.get('/:branchId/discounts', requireBranchAuth, async (req, res) => {
 
 router.post('/:branchId/discounts', requireBranchAuth, async (req, res) => {
   const branchId = parseInt(req.params.branchId, 10);
-  if (!branchId || branchId !== Number(req.user.branch_id)) return res.status(403).json({ message: 'Forbidden' });
+  const isSuperAdmin = String(req.user?.role || req.user?.role_enum || '').toUpperCase() === 'SUPER_ADMIN';
+if (!isSuperAdmin && (!branchId || branchId !== Number(req.user.branch_id))) return res.status(403).json({ message: 'Forbidden' });
   const b2c = Number(req.body?.b2c_discount_pct);
   const b2b = Number(req.body?.b2b_discount_pct);
   if (!Number.isFinite(b2c) || !Number.isFinite(b2b) || b2c < 0 || b2b < 0) {

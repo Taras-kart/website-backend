@@ -625,7 +625,7 @@ router.get('/web/:id', async (req, res) => {
 
 router.get('/admin', requireAuth, async (req, res) => {
   try {
-    const role = String(req.user?.role_enum || '').toUpperCase()
+   const role = String(req.user?.role || req.user?.role_enum || '').toUpperCase()
     const isSuper = role === 'SUPER_ADMIN'
     const branchId = Number(req.user?.branch_id || 0)
 
@@ -670,7 +670,7 @@ router.get('/admin/:id', requireAuth, async (req, res) => {
   if (!id) return res.status(400).json({ message: 'id required' })
 
   try {
-    const role = String(req.user?.role_enum || '').toUpperCase()
+    const role = String(req.user?.role || req.user?.role_enum || '').toUpperCase()
     const isSuper = role === 'SUPER_ADMIN'
     const branchId = Number(req.user?.branch_id || 0)
 
