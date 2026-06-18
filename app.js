@@ -79,6 +79,7 @@ app.get('/', (req, res) => res.status(200).send('Taras Kart API'))
 app.get('/healthz', (req, res) => res.status(200).send('ok'))
 
 app.get('/api/debug/blob-env', (req, res) => {
+  if (process.env.NODE_ENV === 'production') return res.status(404).send('Not found')
   res.json({
     hasToken: Boolean(
       process.env.BLOB_READ_WRITE_TOKEN ||
@@ -89,10 +90,12 @@ app.get('/api/debug/blob-env', (req, res) => {
 })
 
 app.get('/api/debug/jwt', (req, res) => {
+  if (process.env.NODE_ENV === 'production') return res.status(404).send('Not found')
   res.json({ jwtSecretPresent: Boolean(process.env.JWT_SECRET) })
 })
 
 app.get('/api/debug/db', async (req, res) => {
+  if (process.env.NODE_ENV === 'production') return res.status(404).send('Not found')
   const pool = require('./db')
   try {
     const r1 = await pool.query('SELECT 1 as ok')

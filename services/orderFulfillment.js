@@ -20,43 +20,6 @@ function haversineKm(a, b) {
   return 2 * R * Math.asin(Math.sqrt(h))
 }
 
-function pickBestBranch(rows, sale, customerLoc) {
-  if (!rows.length) return null
-
-  if (FORCE_BRANCH_ID != null) {
-    const forced = rows.find((r) => Number(r.id) === Number(FORCE_BRANCH_ID))
-    if (forced) return forced.id
-    return null
-  }
-
-  if (sale.branch_id) {
-    const exact = rows.find((r) => Number(r.id) === Number(sale.branch_id))
-    if (exact) return exact.id
-  }
-
-  const pincode = sale.shipping_address?.pincode || sale.pincode || null
-  const samePin = pincode ? rows.filter((r) => String(r.pincode) === String(pincode)) : []
-  const poolRows = samePin.length ? samePin : rows
-
-  if (customerLoc.lat != null && customerLoc.lng != null) {
-    const sorted = poolRows
-      .map((r) => ({
-        r,
-        d: haversineKm({ lat: r.lat, lng: r.lng }, customerLoc)
-      }))
-      .sort((a, b) => {
-        // Safely sort even if multiple distances are Infinity
-        if (a.d === Infinity && b.d === Infinity) return 0;
-        if (a.d === Infinity) return 1;
-        if (b.d === Infinity) return -1;
-        return a.d - b.d;
-      })
-    return sorted[0].r.id
-  }
-
-  return poolRows[0].id
-}
-
 async function customerLocFromSale(sale, db) {
   if (sale.shipping_address?.lat && sale.shipping_address?.lng) {
     return {
@@ -116,7 +79,12 @@ function pickBestBranch(rows, sale, customerLoc) {
         r,
         d: haversineKm({ lat: r.lat, lng: r.lng }, customerLoc)
       }))
-      .sort((a, b) => a.d - b.d)
+      .sort((a, b) => {
+        if (a.d === Infinity && b.d === Infinity) return 0
+        if (a.d === Infinity) return 1
+        if (b.d === Infinity) return -1
+        return a.d - b.d
+      })
     return sorted[0].r.id
   }
 

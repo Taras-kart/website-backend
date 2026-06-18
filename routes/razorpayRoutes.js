@@ -97,7 +97,7 @@ router.post('/payments/verify', async (req, res) => {
     if (p.rowCount) {
       const saleId = p.rows[0].sale_id
       if (ok) {
-        await pool.query(`UPDATE sales SET payment_status='PAID', updated_at=now() WHERE id=$1::uuid`, [saleId])
+        await pool.query(`UPDATE sales SET payment_status='PAID', updated_at=now() WHERE id=$1::uuid AND payment_status <> 'PAID'`, [saleId])
       } else {
         await pool.query(`UPDATE sales SET payment_status='FAILED', updated_at=now() WHERE id=$1::uuid AND payment_status <> 'PAID'`, [saleId])
       }
@@ -190,7 +190,7 @@ router.post('/razorpay/webhook', express.raw({ type: 'application/json' }), asyn
       if (status === 'PAID') {
         const s = await pool.query(`SELECT sale_id FROM payments WHERE razorpay_order_id=$1`, [paymentEntity.order_id])
         if (s.rowCount) {
-          await pool.query(`UPDATE sales SET payment_status='PAID', updated_at=now() WHERE id=$1::uuid`, [s.rows[0].sale_id])
+          await pool.query(`UPDATE sales SET payment_status='PAID', updated_at=now() WHERE id=$1::uuid AND payment_status <> 'PAID'`, [s.rows[0].sale_id])
         }
       } else if (status === 'FAILED') {
         const s = await pool.query(`SELECT sale_id FROM payments WHERE razorpay_order_id=$1`, [paymentEntity.order_id])
