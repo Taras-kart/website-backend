@@ -3,6 +3,8 @@ const crypto = require('crypto')
 const pool = require('../db')
 const { requireAuth } = require('../middleware/auth')
 const { fulfillOrderWithShiprocket } = require('../services/orderFulfillment')
+const { sendOrderConfirmed } = require('../services/whatsapp')
+const { deductCoinsForOrder, releaseCoinsOnFailure, getWallet } = require('../services/coinsService')
 
 const router = express.Router()
 
@@ -28,7 +30,9 @@ router.post('/web/place', async (req, res) => {
     branch_id,
     payment_status,
     login_email,
-    payment_method
+    payment_method,
+    coins_applied,
+    user_email_for_coins
   } = req.body || {}
 
   if (!Array.isArray(items) || items.length === 0) {
@@ -211,6 +215,31 @@ router.post('/web/place', async (req, res) => {
       )
     }
 
+    // Deduct coins if applied
+    const coinsToDeduct = Number(coins_applied || 0)
+    let coinUserId = null
+    if (coinsToDeduct > 0 && (user_email_for_coins || login_email || customer_email)) {
+      const emailForCoins = user_email_for_coins || login_email || customer_email
+      try {
+        const userRow = await client.query(
+          'SELECT id FROM userstaras WHERE LOWER(email) = LOWER($1) LIMIT 1',
+          [emailForCoins]
+        )
+        if (userRow.rowCount) {
+          coinUserId = userRow.rows[0].id
+          await deductCoinsForOrder(client, {
+            userId: coinUserId,
+            coinsToDeduct,
+            saleId
+          })
+        }
+      } catch (coinErr) {
+        // Coin deduction failure rolls back the entire order
+        await client.query('ROLLBACK')
+        return res.status(400).json({ message: coinErr.message || 'Coin deduction failed' })
+      }
+    }
+
     await client.query('COMMIT')
   } catch (e) {
     try {
@@ -262,12 +291,28 @@ router.post('/web/place', async (req, res) => {
     }
   }
 
+  // Send WhatsApp order confirmation — fire and forget, never blocks the response
+  const mobileForWa = customer_mobile || null
+  if (mobileForWa && saleId && ['COD', 'PAID', 'PENDING'].includes(finalPaymentStatus)) {
+    const itemCount = items.reduce((sum, it) => sum + (Number(it?.qty) || 1), 0)
+    const totalAmt = responseTotals?.payable ?? responseTotals?.bagTotal ?? 0
+    const payLabel = finalPaymentStatus === 'COD' ? 'Cash on Delivery' : 'Online Payment'
+    sendOrderConfirmed(mobileForWa, {
+      customerName: customer_name || 'Customer',
+      orderId: String(saleId).slice(0, 8).toUpperCase(),
+      itemCount,
+      totalAmount: Number(totalAmt).toFixed(2),
+      paymentMethod: payLabel
+    }).catch(err => console.error('WhatsApp order_confirmed failed:', err.message))
+  }
+
   return res.json({
     id: saleId,
     status: 'PLACED',
     payment_status: finalPaymentStatus,
     totals: responseTotals,
     branch_id: resolvedBranchId,
+    coins_applied: Number(coins_applied || 0),
     shiprocket,
     shiprocket_error
   })

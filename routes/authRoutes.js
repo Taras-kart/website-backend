@@ -3,6 +3,7 @@ const pool = require('../db');
 const bcrypt = require('bcryptjs');
 const nodemailer = require('nodemailer');
 const jwt = require('jsonwebtoken');
+const { creditSignupBonus } = require('../services/coinsService')
 const router = express.Router();
 require('dotenv').config();
 
@@ -320,6 +321,7 @@ router.post('/firebase-login', async (req, res) => {
       );
 
       let user;
+      let isNewUser = false;
       if (existing.rows.length > 0) {
         user = existing.rows[0];
       } else {
@@ -328,9 +330,17 @@ router.post('/firebase-login', async (req, res) => {
           [displayName, email, '', 'B2C']
         );
         user = inserted.rows[0];
+        isNewUser = true;
       }
 
       await client.query('COMMIT');
+
+      // Credit signup bonus for new Google/Firebase users — fire and forget
+      if (isNewUser && user?.id) {
+        creditSignupBonus(user.id).catch(e =>
+          console.error('Coins signup bonus failed:', e.message)
+        )
+      }
 
       const payload = {
         id: user.id,

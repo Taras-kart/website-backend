@@ -1,6 +1,7 @@
 const express = require('express')
 const pool = require('../db')
 const ReturnsService = require('../services/returnsService')
+const { clawbackCoins } = require('../services/coinsService')
 
 const router = express.Router()
 
@@ -422,6 +423,20 @@ router.post('/returns/:id/approve', async (req, res) => {
       'UPDATE return_requests SET status=$1, refund_status=$2, updated_at=now() WHERE id=$3',
       ['APPROVED', refundStatus, id]
     )
+
+    // Clawback earned coins for this order — fire and forget
+    if (sale?.customer_email && request?.sale_id) {
+      pool.query(
+        'SELECT id FROM userstaras WHERE LOWER(email)=LOWER($1) LIMIT 1',
+        [sale.customer_email]
+      ).then(ur => {
+        if (ur.rows[0]?.id) {
+          clawbackCoins(ur.rows[0].id, request.sale_id)
+            .catch(e => console.error('Coins clawback error:', e.message))
+        }
+      }).catch(e => console.error('Coins clawback user lookup error:', e.message))
+    }
+
     res.json({ ok: true, reverse })
   } catch (e) {
     res.status(500).json({ ok: false, message: e.message || 'approve failed' })

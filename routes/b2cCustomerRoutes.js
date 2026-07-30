@@ -1,5 +1,6 @@
 const express = require('express');
 const pool = require('../db');
+const { creditSignupBonus } = require('../services/coinsService');
 const router = express.Router();
 
 router.post('/signup', async (req, res) => { 
@@ -18,6 +19,12 @@ router.post('/signup', async (req, res) => {
       [name, email, mobile, password, 'B2C']
     );
 
+    // Credit signup bonus coins — fire and forget
+    if (result.rows[0]?.id) {
+      creditSignupBonus(result.rows[0].id).catch(e =>
+        console.error('Coins signup bonus failed:', e.message)
+      )
+    }
     res.status(201).json({ message: 'B2C customer added', user: result.rows[0] });
   } catch (err) {
     res.status(500).json({ message: 'Server error', error: err.message });

@@ -4,6 +4,8 @@ const Shiprocket = require('../services/shiprocketService');
 const { fulfillOrderWithShiprocket } = require('../services/orderFulfillment');
 
 const router = express.Router();
+const { sendOrderShipped, sendOrderDelivered } = require('../services/whatsapp');
+const { creditEarnedCoins } = require('../services/coinsService');
 
 router.get('/shiprocket/warehouses', async (req, res) => {
   try {
@@ -117,16 +119,103 @@ router.post('/shiprocket/fulfill/:id', async (req, res) => {
 });
 
 router.post('/shiprocket/webhook', async (req, res) => {
+  // Always respond 200 immediately so Shiprocket doesn't retry
+  res.json({ ok: true });
+
   try {
     const payload = req.body || {};
     const shipmentId = payload?.shipment_id || payload?.data?.shipment_id || null;
-    const status = payload?.current_status || payload?.data?.current_status || null;
-    if (shipmentId && status) {
-      await pool.query('UPDATE shipments SET status=$1 WHERE shiprocket_shipment_id=$2', [status, shipmentId]);
+    const awbCode = payload?.awb || payload?.data?.awb || null;
+    const trackingUrl = payload?.tracking_url || payload?.data?.tracking_url || null;
+    const status = String(payload?.current_status || payload?.data?.current_status || '').trim();
+
+    if (!shipmentId || !status) return;
+
+    // Update shipment status in DB
+    await pool.query(
+      'UPDATE shipments SET status=$1 WHERE shiprocket_shipment_id=$2',
+      [status, shipmentId]
+    );
+
+    // Fetch sale details for WhatsApp messaging
+    const shipmentRow = await pool.query(
+      'SELECT sale_id FROM shipments WHERE shiprocket_shipment_id=$1 LIMIT 1',
+      [shipmentId]
+    );
+    if (!shipmentRow.rowCount) return;
+
+    const saleId = shipmentRow.rows[0].sale_id;
+    const saleRow = await pool.query(
+      'SELECT customer_name, customer_mobile, id FROM sales WHERE id=$1 LIMIT 1',
+      [saleId]
+    );
+    if (!saleRow.rowCount) return;
+
+    const sale = saleRow.rows[0];
+    const mobile = sale.customer_mobile;
+    const customerName = sale.customer_name || 'Customer';
+    const orderId = String(sale.id).slice(0, 8).toUpperCase();
+
+    const statusUpper = status.toUpperCase();
+
+    // Message 2 — AWB assigned / shipped
+    const isShipped = statusUpper.includes('SHIPPED') ||
+                      statusUpper.includes('PICKED') ||
+                      statusUpper.includes('AWB') ||
+                      statusUpper.includes('IN TRANSIT');
+
+    if (isShipped && mobile && awbCode) {
+      const trackLink = trackingUrl ||
+        `https://shiprocket.co/tracking/${awbCode}`;
+      sendOrderShipped(mobile, {
+        customerName,
+        orderId,
+        awbNumber: awbCode,
+        trackingUrl: trackLink
+      }).catch(err => console.error('WhatsApp order_shipped failed:', err.message));
     }
-    res.json({ ok: true });
-  } catch {
-    res.status(200).json({ ok: true });
+
+    // Message 3 — Delivered + credit earned coins
+    const isDelivered = statusUpper.includes('DELIVERED');
+    if (isDelivered) {
+      if (mobile) {
+        sendOrderDelivered(mobile, {
+          customerName,
+          orderId
+        }).catch(err => console.error('WhatsApp order_delivered failed:', err.message));
+      }
+
+      // Credit earned coins — find user by sale's customer_email
+      try {
+        const saleDetails = await pool.query(
+          'SELECT customer_email, total, totals FROM sales WHERE id=$1 LIMIT 1',
+          [saleId]
+        )
+        if (saleDetails.rowCount) {
+          const sd = saleDetails.rows[0]
+          const email = sd.customer_email
+          const subtotal = sd.totals?.bagTotal
+            ? Number(sd.totals.bagTotal) - Number(sd.totals.discountTotal || 0)
+            : Number(sd.total || 0)
+
+          if (email && subtotal > 0) {
+            const userRow = await pool.query(
+              'SELECT id FROM userstaras WHERE LOWER(email)=LOWER($1) LIMIT 1',
+              [email]
+            )
+            if (userRow.rows[0]?.id) {
+              creditEarnedCoins(userRow.rows[0].id, saleId, subtotal)
+                .catch(e => console.error('Coins creditEarned error:', e.message))
+            }
+          }
+        }
+      } catch (coinErr) {
+        console.error('Coins: error looking up sale for credit:', coinErr.message)
+      }
+    }
+
+  } catch (err) {
+    console.error('Shiprocket webhook processing error:', err.message);
   }
 });
 

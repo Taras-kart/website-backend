@@ -1,4 +1,5 @@
 const express = require('express')
+const { releaseCoinsOnFailure } = require('../services/coinsService')
 const pool = require('../db')
 const RazorpayService = require('../services/razorpayService')
 
@@ -100,6 +101,17 @@ router.post('/payments/verify', async (req, res) => {
         await pool.query(`UPDATE sales SET payment_status='PAID', updated_at=now() WHERE id=$1::uuid AND payment_status <> 'PAID'`, [saleId])
       } else {
         await pool.query(`UPDATE sales SET payment_status='FAILED', updated_at=now() WHERE id=$1::uuid AND payment_status <> 'PAID'`, [saleId])
+        // Release any coins that were applied to this order
+        const saleRow = await pool.query('SELECT customer_email, login_email FROM sales WHERE id=$1::uuid LIMIT 1', [saleId]).catch(() => ({ rows: [] }))
+        const email = saleRow.rows[0]?.customer_email || saleRow.rows[0]?.login_email
+        if (email) {
+          const userRow = await pool.query('SELECT id FROM userstaras WHERE LOWER(email)=LOWER($1) LIMIT 1', [email]).catch(() => ({ rows: [] }))
+          if (userRow.rows[0]?.id) {
+            releaseCoinsOnFailure(userRow.rows[0].id, saleId).catch(e =>
+              console.error('Coins release on failure error:', e.message)
+            )
+          }
+        }
       }
     }
 
@@ -123,6 +135,19 @@ router.post('/payments/mark-failed', async (req, res) => {
     )
 
     if (!q.rowCount) return res.status(404).json({ message: 'Sale not found' })
+
+    // Release coins on manual mark-failed
+    const saleRow = await pool.query('SELECT customer_email FROM sales WHERE id=$1::uuid LIMIT 1', [saleId]).catch(() => ({ rows: [] }))
+    const email = saleRow.rows[0]?.customer_email
+    if (email) {
+      const userRow = await pool.query('SELECT id FROM userstaras WHERE LOWER(email)=LOWER($1) LIMIT 1', [email]).catch(() => ({ rows: [] }))
+      if (userRow.rows[0]?.id) {
+        releaseCoinsOnFailure(userRow.rows[0].id, saleId).catch(e =>
+          console.error('Coins release on mark-failed error:', e.message)
+        )
+      }
+    }
+
     res.json({ id: q.rows[0].id, payment_status: q.rows[0].payment_status })
   } catch (e) {
     res.status(500).json({ message: e.message || 'failed' })
