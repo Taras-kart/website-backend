@@ -91,7 +91,7 @@ async function sendOrderConfirmed(mobile, { customerName, orderId, itemCount, to
   return sendTemplate(mobile, 'order_confirmed', [
     customerName || 'Customer',
     orderId,
-    String(itemCount),
+    String(itemCount), // product names or count
     String(totalAmount),
     paymentMethod
   ])

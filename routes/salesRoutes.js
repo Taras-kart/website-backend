@@ -294,13 +294,16 @@ router.post('/web/place', async (req, res) => {
   // Send WhatsApp order confirmation — fire and forget, never blocks the response
   const mobileForWa = customer_mobile || null
   if (mobileForWa && saleId && ['COD', 'PAID', 'PENDING'].includes(finalPaymentStatus)) {
-    const itemCount = items.reduce((sum, it) => sum + (Number(it?.qty) || 1), 0)
+    const itemNames = items
+      .map(it => it?.name || it?.product_name || '')
+      .filter(Boolean)
+      .join(', ') || `${items.length} item${items.length !== 1 ? 's' : ''}`
     const totalAmt = responseTotals?.payable ?? responseTotals?.bagTotal ?? 0
     const payLabel = finalPaymentStatus === 'COD' ? 'Cash on Delivery' : 'Online Payment'
     sendOrderConfirmed(mobileForWa, {
       customerName: customer_name || 'Customer',
       orderId: String(saleId).slice(0, 8).toUpperCase(),
-      itemCount,
+      itemCount: itemNames,
       totalAmount: Number(totalAmt).toFixed(2),
       paymentMethod: payLabel
     }).catch(err => console.error('WhatsApp order_confirmed failed:', err.message))
