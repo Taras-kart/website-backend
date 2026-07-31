@@ -301,6 +301,7 @@ const buildProductSelectSql = ({ where, branchIdx, cloudIdx }) => `
     p.name AS product_name,
     p.brand_name AS brand,
     p.gender AS gender,
+    p.pattern_code AS pattern_code,
     v.colour AS color,
     v.size AS size,
     v.mrp::numeric AS original_price_b2c,
