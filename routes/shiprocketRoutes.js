@@ -118,6 +118,17 @@ router.post('/shiprocket/fulfill/:id', async (req, res) => {
   }
 });
 
+// Shiprocket's dashboard performs a reachability check (GET/HEAD) before
+// allowing the webhook URL to be saved. Respond 200 to keep that check happy —
+// actual tracking updates always arrive via POST, handled below.
+router.get('/shiprocket/webhook', (req, res) => {
+  res.status(200).json({ ok: true });
+});
+
+router.head('/shiprocket/webhook', (req, res) => {
+  res.status(200).end();
+});
+
 router.post('/shiprocket/webhook', async (req, res) => {
   try {
     const payload = req.body || {};
