@@ -53,6 +53,18 @@ app.use((req, res, next) => {
 app.use(cors(corsOptions))
 app.options('*', cors(corsOptions))
 app.use(express.json())
+
+// If express.json() fails to parse a malformed/empty body (common with
+// webhook verification pings from Shiprocket, Razorpay, etc.), don't let
+// Express's default error handler send a raw 400 before our routes run.
+app.use((err, req, res, next) => {
+  if (err && err.type === 'entity.parse.failed') {
+    req.body = {}
+    return next()
+  }
+  next(err)
+})
+
 app.use('/api', shiprocketPublicRoutes)
 app.use('/api/upload', require('./routes/uploadRoutes'))
 app.use('/api/products', require('./routes/productRoutes'))
