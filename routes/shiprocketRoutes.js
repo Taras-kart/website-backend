@@ -119,37 +119,47 @@ router.post('/shiprocket/fulfill/:id', async (req, res) => {
 });
 
 router.post('/shiprocket/webhook', async (req, res) => {
-  // Always respond 200 immediately so Shiprocket doesn't retry
-  res.json({ ok: true });
-
   try {
     const payload = req.body || {};
-    const shipmentId = payload?.shipment_id || payload?.data?.shipment_id || null;
-    const awbCode = payload?.awb || payload?.data?.awb || null;
-    const trackingUrl = payload?.tracking_url || payload?.data?.tracking_url || null;
-    const status = String(payload?.current_status || payload?.data?.current_status || '').trim();
 
-    if (!shipmentId || !status) return;
+    // Real Shiprocket payload uses awb, current_status/shipment_status,
+    // and channel_order_id (which is the value WE sent when creating the
+    // shipment — "${sale.id}-${branch_id}"). There is no shipment_id field.
+    const awbCode = payload?.awb ? String(payload.awb) : null;
+    const trackingUrl = payload?.tracking_url || payload?.track_url || null;
+    const status = String(
+      payload?.current_status || payload?.shipment_status || ''
+    ).trim();
+    const channelOrderId = String(
+      payload?.channel_order_id || payload?.order_id || ''
+    ).trim();
 
-    // Update shipment status in DB
-    await pool.query(
-      'UPDATE shipments SET status=$1 WHERE shiprocket_shipment_id=$2',
-      [status, shipmentId]
-    );
+    if (!channelOrderId || !status) {
+      return res.json({ ok: true });
+    }
+
+    // channel_order_id is formatted as "${sale.id}-${branch_id}" —
+    // extract the sale UUID (everything before the last "-<digits>")
+    const match = channelOrderId.match(/^(.+)-(\d+)$/);
+    const saleId = match ? match[1] : channelOrderId;
+
+    // Update shipment status in DB (best-effort — match by awb or shipment id)
+    if (awbCode) {
+      await pool.query(
+        'UPDATE shipments SET status=$1 WHERE awb=$2 OR shiprocket_shipment_id=$2',
+        [status, awbCode]
+      ).catch(() => {});
+    }
 
     // Fetch sale details for WhatsApp messaging
-    const shipmentRow = await pool.query(
-      'SELECT sale_id FROM shipments WHERE shiprocket_shipment_id=$1 LIMIT 1',
-      [shipmentId]
-    );
-    if (!shipmentRow.rowCount) return;
-
-    const saleId = shipmentRow.rows[0].sale_id;
     const saleRow = await pool.query(
-      'SELECT customer_name, customer_mobile, id FROM sales WHERE id=$1 LIMIT 1',
+      'SELECT customer_name, customer_mobile, customer_email, total, totals, id FROM sales WHERE id=$1::uuid LIMIT 1',
       [saleId]
-    );
-    if (!saleRow.rowCount) return;
+    ).catch(() => ({ rowCount: 0 }));
+
+    if (!saleRow.rowCount) {
+      return res.json({ ok: true });
+    }
 
     const sale = saleRow.rows[0];
     const mobile = sale.customer_mobile;
@@ -167,7 +177,7 @@ router.post('/shiprocket/webhook', async (req, res) => {
     if (isShipped && mobile && awbCode) {
       const trackLink = trackingUrl ||
         `https://shiprocket.co/tracking/${awbCode}`;
-      sendOrderShipped(mobile, {
+      await sendOrderShipped(mobile, {
         customerName,
         orderId,
         awbNumber: awbCode,
@@ -179,7 +189,7 @@ router.post('/shiprocket/webhook', async (req, res) => {
     const isDelivered = statusUpper.includes('DELIVERED');
     if (isDelivered) {
       if (mobile) {
-        sendOrderDelivered(mobile, {
+        await sendOrderDelivered(mobile, {
           customerName,
           orderId
         }).catch(err => console.error('WhatsApp order_delivered failed:', err.message));
@@ -187,26 +197,19 @@ router.post('/shiprocket/webhook', async (req, res) => {
 
       // Credit earned coins — find user by sale's customer_email
       try {
-        const saleDetails = await pool.query(
-          'SELECT customer_email, total, totals FROM sales WHERE id=$1 LIMIT 1',
-          [saleId]
-        )
-        if (saleDetails.rowCount) {
-          const sd = saleDetails.rows[0]
-          const email = sd.customer_email
-          const subtotal = sd.totals?.bagTotal
-            ? Number(sd.totals.bagTotal) - Number(sd.totals.discountTotal || 0)
-            : Number(sd.total || 0)
+        const email = sale.customer_email
+        const subtotal = sale.totals?.bagTotal
+          ? Number(sale.totals.bagTotal) - Number(sale.totals.discountTotal || 0)
+          : Number(sale.total || 0)
 
-          if (email && subtotal > 0) {
-            const userRow = await pool.query(
-              'SELECT id FROM userstaras WHERE LOWER(email)=LOWER($1) LIMIT 1',
-              [email]
-            )
-            if (userRow.rows[0]?.id) {
-              creditEarnedCoins(userRow.rows[0].id, saleId, subtotal)
-                .catch(e => console.error('Coins creditEarned error:', e.message))
-            }
+        if (email && subtotal > 0) {
+          const userRow = await pool.query(
+            'SELECT id FROM userstaras WHERE LOWER(email)=LOWER($1) LIMIT 1',
+            [email]
+          )
+          if (userRow.rows[0]?.id) {
+            await creditEarnedCoins(userRow.rows[0].id, saleId, subtotal)
+              .catch(e => console.error('Coins creditEarned error:', e.message))
           }
         }
       } catch (coinErr) {
@@ -214,8 +217,12 @@ router.post('/shiprocket/webhook', async (req, res) => {
       }
     }
 
+    return res.json({ ok: true });
+
   } catch (err) {
     console.error('Shiprocket webhook processing error:', err.message);
+    // Still return 200 so Shiprocket doesn't retry/disable the endpoint
+    if (!res.headersSent) return res.json({ ok: true });
   }
 });
 
