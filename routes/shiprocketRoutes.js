@@ -121,15 +121,20 @@ router.post('/shiprocket/fulfill/:id', async (req, res) => {
 // Shiprocket's dashboard performs a reachability check (GET/HEAD) before
 // allowing the webhook URL to be saved. Respond 200 to keep that check happy —
 // actual tracking updates always arrive via POST, handled below.
-router.get('/shiprocket/webhook', (req, res) => {
+//
+// NOTE: Shiprocket blocks webhook URLs containing the words "shiprocket",
+// "kartrocket", "sr", or "kr". Use /api/logistics/webhook (below) when
+// registering the URL in their dashboard — /api/shiprocket/webhook is kept
+// for backward compatibility only and should not be used with Shiprocket.
+router.get(['/shiprocket/webhook', '/logistics/webhook'], (req, res) => {
   res.status(200).json({ ok: true });
 });
 
-router.head('/shiprocket/webhook', (req, res) => {
+router.head(['/shiprocket/webhook', '/logistics/webhook'], (req, res) => {
   res.status(200).end();
 });
 
-router.post('/shiprocket/webhook', async (req, res) => {
+router.post(['/shiprocket/webhook', '/logistics/webhook'], async (req, res) => {
   try {
     const payload = req.body || {};
 
