@@ -4,6 +4,45 @@ const { requireAuth } = require('../middleware/auth')
 const { getTracking } = require('../controllers/orderController')
 const Shiprocket = require('../services/shiprocketService')
 
+async function resolveVariantImage(db, variantId) {
+  const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh'
+  const q = await db.query(
+    `SELECT
+       v.id AS variant_id,
+       v.product_id,
+       v.size,
+       v.colour,
+       COALESCE(bc.ean_code, '') AS ean_code,
+       NULLIF(pci.image_url, '') AS shared_image_url,
+       COALESCE(
+         NULLIF(v.image_url, ''),
+         NULLIF(pi.image_url, ''),
+         CASE
+           WHEN COALESCE(bc.ean_code, '') <> ''
+           THEN CONCAT('https://res.cloudinary.com/', $2::text, '/image/upload/f_auto,q_auto/products/', bc.ean_code)
+           ELSE NULL
+         END
+       ) AS fallback_image_url
+     FROM product_variants v
+     JOIN products p ON p.id = v.product_id
+     LEFT JOIN product_colour_images pci
+       ON pci.product_id = p.id
+      AND LOWER(BTRIM(pci.colour)) = LOWER(BTRIM(v.colour))
+     LEFT JOIN LATERAL (
+       SELECT ean_code
+       FROM barcodes b
+       WHERE b.variant_id = v.id
+       ORDER BY b.id ASC
+       LIMIT 1
+     ) bc ON TRUE
+     LEFT JOIN product_images pi ON pi.ean_code = bc.ean_code
+     WHERE v.id = $1
+     LIMIT 1`,
+    [variantId, cloud]
+  )
+  return q.rows[0] || null
+}
+
 router.post('/web/place', async (req, res) => {
   const body = req.body || {}
   const items = Array.isArray(body.items) ? body.items : []
@@ -31,68 +70,60 @@ router.post('/web/place', async (req, res) => {
     mrp: Number(it.mrp || it.price || 0) || 0,
     size: it.size != null ? String(it.size) : null,
     colour: it.colour != null ? String(it.colour) : null,
-    image_url: it.image_url != null ? String(it.image_url) : null
+    image_url: it.image_url != null ? String(it.image_url) : null,
+    ean_code: it.ean_code != null ? String(it.ean_code) : it.barcode_value != null ? String(it.barcode_value) : null
   }))
 
   if (normalizedItems.some((it) => !it.variant_id || it.qty <= 0)) {
     return res.status(400).json({ message: 'Invalid items (variant_id/qty)' })
   }
 
-const cartJson = JSON.stringify(
-    normalizedItems.map((i) => ({ variant_id: i.variant_id, qty: i.qty }))
-  )
-
   const agg = new Map()
   for (const it of normalizedItems) {
     agg.set(it.variant_id, (agg.get(it.variant_id) || 0) + it.qty)
   }
+
   const variantIds = Array.from(agg.keys())
   const providedBranchId = Number(body.branch_id || 0) || null
-
 
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
-    let chosenBranchId = providedBranchId;
+    let chosenBranchId = providedBranchId
 
-    // Verify global stock availability across ALL branches using the correct table
     for (const vId of variantIds) {
-      const qty = Number(agg.get(vId) || 0);
+      const qty = Number(agg.get(vId) || 0)
       const stockQ = await client.query(
-        `SELECT SUM(GREATEST(COALESCE(on_hand, 0) - COALESCE(reserved, 0), 0)) as avail,
-                MAX(branch_id) as sample_branch
+        `SELECT SUM(GREATEST(COALESCE(on_hand, 0) - COALESCE(reserved, 0), 0)) AS avail,
+                MAX(branch_id) AS sample_branch
          FROM branch_variant_stock
          WHERE variant_id = $1 AND is_active = true`,
         [vId]
-      );
+      )
 
-      const avail = Number(stockQ.rows[0]?.avail || 0);
+      const avail = Number(stockQ.rows[0]?.avail || 0)
       if (avail < qty) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({ message: `Insufficient stock. Only ${avail} left globally for this variant.` });
+        await client.query('ROLLBACK')
+        return res.status(400).json({ message: `Insufficient stock. Only ${avail} left globally for this variant.` })
       }
 
-      // Pick a primary branch for the main sales record if none provided
       if (!chosenBranchId && stockQ.rows[0]?.sample_branch) {
-        chosenBranchId = stockQ.rows[0].sample_branch;
+        chosenBranchId = stockQ.rows[0].sample_branch
       }
     }
 
-    if (!chosenBranchId) chosenBranchId = 1; // Failsafe fallback
+    if (!chosenBranchId) chosenBranchId = 1
 
-    const totalPayable =
-      totals && totals.payable != null ? Number(totals.payable) : null
+    const totalPayable = totals && totals.payable != null ? Number(totals.payable) : null
 
     const saleQ = await client.query(
-      `
-      INSERT INTO sales
+      `INSERT INTO sales
         (source, status, payment_status, payment_method, total, totals, branch_id,
          customer_name, customer_email, customer_mobile, shipping_address, login_email, created_at)
-      VALUES
+       VALUES
         ('WEB', 'PLACED', $1, $2, $3, $4::jsonb, $5,
          $6, $7, $8, $9::jsonb, $10, now())
-      RETURNING id
-      `,
+       RETURNING id`,
       [
         payment_status,
         payment_method,
@@ -114,23 +145,35 @@ const cartJson = JSON.stringify(
     }
 
     for (const it of normalizedItems) {
+      const resolved = await resolveVariantImage(client, it.variant_id)
+      if (!resolved) {
+        await client.query('ROLLBACK')
+        return res.status(400).json({ message: `Invalid variant ${it.variant_id}` })
+      }
+
+      const providedImage = String(it.image_url || '').trim()
+      const itemImage = resolved.shared_image_url || providedImage || resolved.fallback_image_url || null
+      const itemProductId = Number(resolved.product_id) || null
+      const itemSize = it.size || resolved.size || null
+      const itemColour = it.colour || resolved.colour || null
+      const itemEan = String(it.ean_code || '').trim() || resolved.ean_code || null
+
       await client.query(
-        `
-        INSERT INTO sale_items
-          (sale_id, product_id, variant_id, qty, price, mrp, size, colour, image_url, created_at)
-        VALUES
-          ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, now())
-        `,
+        `INSERT INTO sale_items
+          (sale_id, product_id, variant_id, qty, price, mrp, size, colour, image_url, ean_code, created_at)
+         VALUES
+          ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, now())`,
         [
           saleId,
-          it.product_id,
+          itemProductId,
           it.variant_id,
           it.qty,
           it.price,
           it.mrp,
-          it.size,
-          it.colour,
-          it.image_url
+          itemSize,
+          itemColour,
+          itemImage,
+          itemEan
         ]
       )
     }
@@ -264,7 +307,7 @@ router.post('/cancel', async (req, res) => {
       [sale_id]
     )
 
-    shiprocketOrderIds = shipQ.rows.map(r => r.shiprocket_order_id).filter(Boolean)
+    shiprocketOrderIds = shipQ.rows.map((r) => r.shiprocket_order_id).filter(Boolean)
 
     await client.query(`UPDATE sales SET status = 'CANCELLED' WHERE id = $1::uuid`, [sale_id])
     await client.query(`UPDATE shipments SET status = 'CANCELLED' WHERE sale_id = $1`, [sale_id])
@@ -279,8 +322,12 @@ router.post('/cancel', async (req, res) => {
     await client.query('COMMIT')
     client.release()
   } catch {
-    try { await client.query('ROLLBACK') } catch {}
-    try { client.release() } catch {}
+    try {
+      await client.query('ROLLBACK')
+    } catch {}
+    try {
+      client.release()
+    } catch {}
     return res.status(500).json({ ok: false, message: 'Failed to cancel order' })
   }
 

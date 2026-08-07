@@ -22,7 +22,8 @@ function addHasImageWhere(whereSql) {
   return `
     (${whereSql})
     AND (
-      (NULLIF(v.image_url,'') IS NOT NULL AND v.image_url NOT LIKE '/images/%')
+      (NULLIF(pci.image_url,'') IS NOT NULL AND pci.image_url NOT LIKE '/images/%')
+      OR (NULLIF(v.image_url,'') IS NOT NULL AND v.image_url NOT LIKE '/images/%')
       OR (NULLIF(pi.image_url,'') IS NOT NULL AND pi.image_url NOT LIKE '/images/%')
       OR COALESCE(bc_self.ean_code, bc_any.ean_code, '') <> ''
     )
@@ -237,10 +238,14 @@ async function fetchImageList({ gender, limit }) {
         v.colour AS color,
         v.size AS size,
         COALESCE(bc_self.ean_code, bc_any.ean_code, '') AS ean_code,
+        pci.image_url AS shared_image,
         v.image_url AS v_image,
         pi.image_url AS pi_image
       FROM products p
       JOIN product_variants v ON v.product_id = p.id
+      LEFT JOIN product_colour_images pci
+        ON pci.product_id = p.id
+       AND LOWER(BTRIM(pci.colour)) = LOWER(BTRIM(v.colour))
       LEFT JOIN LATERAL (
         SELECT ean_code FROM barcodes b WHERE b.variant_id = v.id ORDER BY id ASC LIMIT 1
       ) bc_self ON TRUE
@@ -271,6 +276,7 @@ async function fetchImageList({ gender, limit }) {
       color,
       size,
       COALESCE(
+        NULLIF(shared_image,''),
         NULLIF(v_image,''),
         NULLIF(pi_image,''),
         CASE
@@ -280,6 +286,7 @@ async function fetchImageList({ gender, limit }) {
       ) AS image_url
     FROM base
     WHERE COALESCE(
+      NULLIF(shared_image,''),
       NULLIF(v_image,''),
       NULLIF(pi_image,''),
       CASE
@@ -287,7 +294,7 @@ async function fetchImageList({ gender, limit }) {
         ELSE NULL
       END
     ) IS NOT NULL
-    ORDER BY v.id DESC
+    ORDER BY id DESC
     LIMIT $${limIdx}
   `
   const { rows } = await pool.query(sql, params)
@@ -327,7 +334,18 @@ const buildProductSelectSql = ({ where, branchIdx, cloudIdx }) => `
       ELSE FALSE
     END AS in_stock,
     COALESCE(bc_self.ean_code, bc_any.ean_code, '') AS ean_code,
+    pci.image_url AS shared_image_url,
+    v.image_url AS variant_image_url,
+    pi.image_url AS ean_image_url,
+    CASE
+      WHEN NULLIF(pci.image_url, '') IS NOT NULL THEN 'shared'
+      WHEN NULLIF(v.image_url, '') IS NOT NULL THEN 'variant'
+      WHEN NULLIF(pi.image_url, '') IS NOT NULL THEN 'ean'
+      WHEN COALESCE(bc_self.ean_code, bc_any.ean_code, '') <> '' THEN 'cloudinary_ean'
+      ELSE 'placeholder'
+    END AS image_source,
     COALESCE(
+      NULLIF(pci.image_url, ''),
       NULLIF(v.image_url, ''),
       NULLIF(pi.image_url, ''),
       CASE
@@ -343,6 +361,9 @@ const buildProductSelectSql = ({ where, branchIdx, cloudIdx }) => `
     ) AS image_url
   FROM products p
   JOIN product_variants v ON v.product_id = p.id
+  LEFT JOIN product_colour_images pci
+    ON pci.product_id = p.id
+   AND LOWER(BTRIM(pci.colour)) = LOWER(BTRIM(v.colour))
   LEFT JOIN LATERAL (
     SELECT ean_code FROM barcodes b WHERE b.variant_id = v.id ORDER BY id ASC LIMIT 1
   ) bc_self ON TRUE
@@ -911,7 +932,7 @@ router.put('/:id(\\d+)', async (req, res) => {
     if (branchId) {
       const existingStock = await client.query(
         `
-        SELECT id
+        SELECT 1
         FROM branch_variant_stock
         WHERE variant_id = $1 AND branch_id = $2
         LIMIT 1
@@ -990,7 +1011,6 @@ router.put('/:id(\\d+)', async (req, res) => {
   }
 });
 
-
 router.delete('/:id(\\d+)', async (req, res) => {
   const client = await pool.connect();
 
@@ -1038,16 +1058,10 @@ router.delete('/:id(\\d+)', async (req, res) => {
   }
 });
 
-
-module.exports = router
-
-// ==========================================
-// BULK UPDATE ROUTE (Prevents API Spam)
-// ==========================================
 router.put('/bulk-update', async (req, res) => {
   const client = await pool.connect();
   try {
-    const updates = req.body.updates; // Expecting an array of product changes
+    const updates = req.body.updates;
     if (!Array.isArray(updates) || updates.length === 0) {
       return res.status(400).json({ message: 'No updates provided' });
     }
@@ -1064,23 +1078,20 @@ router.put('/bulk-update', async (req, res) => {
       const gender = toGender(item.category);
       const stockCount = Math.max(0, parseInt(item.total_count, 10) || 0);
 
-      // Update product table
       await client.query(
-        `UPDATE products SET name = $1, brand_name = $2, gender = $3 
+        `UPDATE products SET name = $1, brand_name = $2, gender = $3
          WHERE id = (SELECT product_id FROM product_variants WHERE id = $4 LIMIT 1)`,
         [item.product_name, item.brand, gender, variantId]
       );
 
-      // Update variant table
       await client.query(
-        `UPDATE product_variants SET colour = $1, size = $2, mrp = $3, 
+        `UPDATE product_variants SET colour = $1, size = $2, mrp = $3,
          b2b_discount_pct = $4, b2c_discount_pct = $5, image_url = COALESCE($6, image_url)
          WHERE id = $7`,
-        [item.color, item.size, item.original_price_b2b || item.original_price_b2c, 
+        [item.color, item.size, item.original_price_b2b || item.original_price_b2c,
          item.discount_b2b || 0, item.discount_b2c || 0, item.image_url || null, variantId]
       );
 
-      // Update branch stock
       if (branchId) {
         await client.query(
           `INSERT INTO branch_variant_stock (variant_id, branch_id, on_hand, reserved, is_active)
@@ -1089,7 +1100,7 @@ router.put('/bulk-update', async (req, res) => {
           [variantId, branchId, stockCount]
         );
       }
-      
+
       results.push({ id: variantId, status: 'updated' });
     }
 
@@ -1102,3 +1113,5 @@ router.put('/bulk-update', async (req, res) => {
     client.release();
   }
 });
+
+module.exports = router

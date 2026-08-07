@@ -645,50 +645,134 @@ if (!isSuperAdmin && (!branchId || branchId !== Number(req.user.branch_id))) ret
 router.post('/:branchId/images/confirm', requireBranchAuth, async (req, res) => {
   const branchId = parseInt(req.params.branchId, 10);
   const isSuperAdmin = String(req.user?.role || req.user?.role_enum || '').toUpperCase() === 'SUPER_ADMIN';
-if (!isSuperAdmin && (!branchId || branchId !== Number(req.user.branch_id))) return res.status(403).json({ message: 'Forbidden' });
+  if (!isSuperAdmin && (!branchId || branchId !== Number(req.user.branch_id))) return res.status(403).json({ message: 'Forbidden' });
+
   const images = Array.isArray(req.body?.images) ? req.body.images : [];
   if (!images.length) return res.status(400).json({ message: 'No images' });
+
+  const bodyScope = cleanText(req.body?.scope || req.body?.mode || '').toLowerCase();
+  const sharedScopes = new Set(['shared', 'colour', 'color', 'product_colour', 'product_color', 'product-colour', 'product-color']);
+
+  const client = await pool.connect();
+  let totalUpdated = 0;
+  let sharedUpdated = 0;
+  let legacyUpdated = 0;
+  let skipped = 0;
+
   try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS product_images (
-        ean_code text PRIMARY KEY,
-        image_url text NOT NULL,
-        uploaded_at timestamptz DEFAULT now()
-      )
-    `);
-    const client = await pool.connect();
-    let updated = 0;
-    try {
-      await client.query('BEGIN');
-      for (const img of images) {
-        const ean = extractEANFromName(img.ean || '');
-        const url = String(img.secure_url || '').trim();
-        if (!ean || !url) continue;
+    await client.query('BEGIN');
+
+    for (const img of images) {
+      const url = cleanText(img.secure_url || img.image_url || img.url || '');
+      if (!url) {
+        skipped += 1;
+        continue;
+      }
+
+      const rawEan = cleanText(img.ean || img.ean_code || img.filename || img.name || '');
+      const ean = extractEANFromName(rawEan);
+      const imageScope = cleanText(img.scope || img.image_scope || img.mode || bodyScope).toLowerCase();
+      const requestedProductId = parseInt(img.product_id, 10);
+      const requestedColour = cleanText(img.colour || img.color || '');
+      const useShared = img.shared === true || sharedScopes.has(imageScope) || (Number.isFinite(requestedProductId) && requestedProductId > 0 && requestedColour);
+
+      if (useShared) {
+        let productId = Number.isFinite(requestedProductId) && requestedProductId > 0 ? requestedProductId : null;
+        let colour = requestedColour;
+
+        if ((!productId || !colour) && ean) {
+          const resolved = await client.query(
+            `SELECT pv.product_id, pv.colour
+             FROM barcodes b
+             JOIN product_variants pv ON pv.id = b.variant_id
+             WHERE b.ean_code = $1
+             LIMIT 1`,
+            [ean]
+          );
+
+          if (resolved.rows.length) {
+            productId = productId || Number(resolved.rows[0].product_id);
+            colour = colour || cleanText(resolved.rows[0].colour);
+          }
+        }
+
+        if (!productId || !colour) {
+          skipped += 1;
+          continue;
+        }
+
+        const publicId = cleanText(img.cloudinary_public_id || img.public_id || '') || null;
+
+        await client.query(
+          `INSERT INTO product_colour_images (product_id, colour, image_url, cloudinary_public_id, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, NOW(), NOW())
+           ON CONFLICT (product_id, (LOWER(BTRIM(colour))))
+           DO UPDATE SET image_url = EXCLUDED.image_url,
+                         cloudinary_public_id = COALESCE(EXCLUDED.cloudinary_public_id, product_colour_images.cloudinary_public_id),
+                         updated_at = NOW()`,
+          [productId, colour, url, publicId]
+        );
+
+        await client.query(
+          `UPDATE product_variants
+           SET image_url = $3
+           WHERE product_id = $1
+             AND LOWER(BTRIM(colour)) = LOWER(BTRIM($2))`,
+          [productId, colour, url]
+        );
+
         await client.query(
           `INSERT INTO product_images (ean_code, image_url, uploaded_at)
-           VALUES ($1, $2, NOW())
-           ON CONFLICT (ean_code) DO UPDATE SET image_url = EXCLUDED.image_url, uploaded_at = NOW()`,
-          [ean, url]
+           SELECT b.ean_code, $3, NOW()
+           FROM product_variants pv
+           JOIN barcodes b ON b.variant_id = pv.id
+           WHERE pv.product_id = $1
+             AND LOWER(BTRIM(pv.colour)) = LOWER(BTRIM($2))
+           ON CONFLICT (ean_code)
+           DO UPDATE SET image_url = EXCLUDED.image_url,
+                         uploaded_at = NOW()`,
+          [productId, colour, url]
         );
-        await client.query(
-          `UPDATE product_variants v
-             SET image_url = $2
-           FROM barcodes b
-           WHERE b.variant_id = v.id AND b.ean_code = $1`,
-          [ean, url]
-        );
-        updated += 1;
+
+        sharedUpdated += 1;
+        totalUpdated += 1;
+        continue;
       }
-      await client.query('COMMIT');
-    } catch (e) {
-      await client.query('ROLLBACK');
-      return res.status(500).json({ message: e.message || 'DB error' });
-    } finally {
-      client.release();
+
+      if (!ean) {
+        skipped += 1;
+        continue;
+      }
+
+      await client.query(
+        `INSERT INTO product_images (ean_code, image_url, uploaded_at)
+         VALUES ($1, $2, NOW())
+         ON CONFLICT (ean_code)
+         DO UPDATE SET image_url = EXCLUDED.image_url,
+                       uploaded_at = NOW()`,
+        [ean, url]
+      );
+
+      await client.query(
+        `UPDATE product_variants v
+         SET image_url = $2
+         FROM barcodes b
+         WHERE b.variant_id = v.id
+           AND b.ean_code = $1`,
+        [ean, url]
+      );
+
+      legacyUpdated += 1;
+      totalUpdated += 1;
     }
-    res.json({ totalUpdated: updated });
+
+    await client.query('COMMIT');
+    return res.json({ totalUpdated, sharedUpdated, legacyUpdated, skipped });
   } catch (e) {
-    res.status(500).json({ message: e.message || 'Server error' });
+    await client.query('ROLLBACK');
+    return res.status(500).json({ message: e.message || 'DB error' });
+  } finally {
+    client.release();
   }
 });
 
@@ -722,10 +806,13 @@ if (!isSuperAdmin && (!branchId || branchId !== Number(req.user.branch_id))) ret
          bvs.on_hand,
          bvs.reserved,
          COALESCE(bc.ean_code,'') AS ean_code,
-         COALESCE(v.image_url, pi.image_url, '') AS image_url
+         COALESCE(NULLIF(pci.image_url, ''), NULLIF(v.image_url, ''), NULLIF(pi.image_url, ''), '') AS image_url
        FROM branch_variant_stock bvs
        JOIN product_variants v ON v.id = bvs.variant_id
        JOIN products p ON p.id = v.product_id
+       LEFT JOIN product_colour_images pci
+         ON pci.product_id = p.id
+        AND LOWER(BTRIM(pci.colour)) = LOWER(BTRIM(v.colour))
        LEFT JOIN LATERAL (
          SELECT ean_code FROM barcodes bc WHERE bc.variant_id = v.id ORDER BY id ASC LIMIT 1
        ) bc ON TRUE

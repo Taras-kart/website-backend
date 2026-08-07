@@ -19,6 +19,45 @@ const uuid = () => {
   return `${s.slice(0, 8)}-${s.slice(8, 12)}-${s.slice(12, 16)}-${s.slice(16, 20)}-${s.slice(20)}`
 }
 
+async function resolveVariantImage(db, variantId) {
+  const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh'
+  const q = await db.query(
+    `SELECT
+       v.id AS variant_id,
+       v.product_id,
+       v.size,
+       v.colour,
+       COALESCE(bc.ean_code, '') AS ean_code,
+       NULLIF(pci.image_url, '') AS shared_image_url,
+       COALESCE(
+         NULLIF(v.image_url, ''),
+         NULLIF(pi.image_url, ''),
+         CASE
+           WHEN COALESCE(bc.ean_code, '') <> ''
+           THEN CONCAT('https://res.cloudinary.com/', $2::text, '/image/upload/f_auto,q_auto/products/', bc.ean_code)
+           ELSE NULL
+         END
+       ) AS fallback_image_url
+     FROM product_variants v
+     JOIN products p ON p.id = v.product_id
+     LEFT JOIN product_colour_images pci
+       ON pci.product_id = p.id
+      AND LOWER(BTRIM(pci.colour)) = LOWER(BTRIM(v.colour))
+     LEFT JOIN LATERAL (
+       SELECT ean_code
+       FROM barcodes b
+       WHERE b.variant_id = v.id
+       ORDER BY b.id ASC
+       LIMIT 1
+     ) bc ON TRUE
+     LEFT JOIN product_images pi ON pi.ean_code = bc.ean_code
+     WHERE v.id = $1
+     LIMIT 1`,
+    [variantId, cloud]
+  )
+  return q.rows[0] || null
+}
+
 router.post('/web/place', async (req, res) => {
   const {
     customer_email,
@@ -195,6 +234,17 @@ router.post('/web/place', async (req, res) => {
     for (const it of items) {
       const vId = Number(it?.variant_id ?? it?.product_id)
       const qty = Number(it?.qty ?? 1) || 1
+      const resolved = await resolveVariantImage(client, vId)
+      if (!resolved) {
+        await client.query('ROLLBACK')
+        return res.status(400).json({ message: `Invalid variant ${vId}` })
+      }
+      const providedImage = String(it?.image_url || '').trim()
+      const providedEan = String(it?.ean_code ?? it?.barcode_value ?? '').trim()
+      const itemImage = resolved.shared_image_url || providedImage || resolved.fallback_image_url || null
+      const itemEan = providedEan || resolved.ean_code || null
+      const itemSize = it?.size ?? it?.selected_size ?? resolved.size ?? null
+      const itemColour = it?.colour ?? it?.color ?? it?.selected_color ?? resolved.colour ?? null
       await client.query(
         `INSERT INTO sale_items
          (id, sale_id, variant_id, qty, price, mrp, size, colour, image_url, ean_code)
@@ -207,15 +257,14 @@ router.post('/web/place', async (req, res) => {
           qty,
           Number(it?.price ?? 0) || 0,
           it?.mrp != null ? Number(it.mrp) : null,
-          it?.size ?? it?.selected_size ?? null,
-          it?.colour ?? it?.color ?? it?.selected_color ?? null,
-          it?.image_url ?? null,
-          it?.ean_code ?? it?.barcode_value ?? null
+          itemSize,
+          itemColour,
+          itemImage,
+          itemEan
         ]
       )
     }
 
-    // Deduct coins if applied
     const coinsToDeduct = Number(coins_applied || 0)
     let coinUserId = null
     if (coinsToDeduct > 0 && (user_email_for_coins || login_email || customer_email)) {
@@ -234,7 +283,7 @@ router.post('/web/place', async (req, res) => {
           })
         }
       } catch (coinErr) {
-        // Coin deduction failure rolls back the entire order
+
         await client.query('ROLLBACK')
         return res.status(400).json({ message: coinErr.message || 'Coin deduction failed' })
       }
@@ -291,7 +340,6 @@ router.post('/web/place', async (req, res) => {
     }
   }
 
-  // Send WhatsApp order confirmation — fire and forget, never blocks the response
   const mobileForWa = customer_mobile || null
   if (mobileForWa && saleId && ['COD', 'PAID', 'PENDING'].includes(finalPaymentStatus)) {
     const itemNames = items
@@ -321,14 +369,9 @@ router.post('/web/place', async (req, res) => {
   })
 })
 
-
-// ══════════════════════════════════════════════════════════════
-// B2B BULK ORDER ROUTE (Bypasses Stock Checks & Shiprocket)
-// ══════════════════════════════════════════════════════════════
-router.post('/web/b2b-place', async (req, res) => { // FIX 2: Added requireAuth
+router.post('/web/b2b-place', async (req, res) => {
   const { customer_email, customer_name, shipping_address, items, totals, payment_method } = req.body || {}
 
-    // Validate email is present instead
   if (!customer_email) {
     return res.status(400).json({ message: 'customer_email required' })
   }
@@ -341,7 +384,6 @@ router.post('/web/b2b-place', async (req, res) => { // FIX 2: Added requireAuth
   try {
     await client.query('BEGIN')
 
-    // 1. Create the Sale Record as an Inquiry
     const saleQ = await client.query(
       `INSERT INTO sales
        (source, customer_email, customer_name, shipping_address, status, payment_status, totals, total, payment_method, is_b2b, created_at)
@@ -360,30 +402,39 @@ router.post('/web/b2b-place', async (req, res) => { // FIX 2: Added requireAuth
 
     const saleId = saleQ.rows[0].id
 
-    // 2. Insert the Bulk Items (No stock decrementing!)
     for (const it of items) {
-      
-      // FIX 4: Validate variant_id to prevent cryptic DB errors or null inserts
       if (!it.variant_id) {
         await client.query('ROLLBACK')
         return res.status(400).json({ message: 'variant_id is required for all items' })
       }
 
+      const resolved = await resolveVariantImage(client, Number(it.variant_id))
+      if (!resolved) {
+        await client.query('ROLLBACK')
+        return res.status(400).json({ message: `Invalid variant ${it.variant_id}` })
+      }
+
+      const providedImage = String(it.image_url || '').trim()
+      const itemImage = resolved.shared_image_url || providedImage || resolved.fallback_image_url || ''
+      const itemSize = it.size || resolved.size || ''
+      const itemColour = it.colour || resolved.colour || ''
+
       await client.query(
         `INSERT INTO sale_items
-         (id, sale_id, variant_id, qty, price, mrp, size, colour, image_url)
+         (id, sale_id, variant_id, qty, price, mrp, size, colour, image_url, ean_code)
          VALUES
-         ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9)`,
+         ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10)`,
         [
-          uuid(), 
-          saleId, 
-          it.variant_id, 
-          Number(it.qty) || 1, 
-          Number(it.price) || 0, 
-          Number(it.mrp) || 0, 
-          it.size || '', 
-          it.colour || '', 
-          it.image_url || ''
+          uuid(),
+          saleId,
+          it.variant_id,
+          Number(it.qty) || 1,
+          Number(it.price) || 0,
+          Number(it.mrp) || 0,
+          itemSize,
+          itemColour,
+          itemImage,
+          resolved.ean_code || null
         ]
       )
     }
@@ -398,7 +449,6 @@ router.post('/web/b2b-place', async (req, res) => { // FIX 2: Added requireAuth
     client.release()
   }
 })
-
 
 router.post('/web/set-payment-status', async (req, res) => {
   const client = await pool.connect()
@@ -546,22 +596,34 @@ router.get('/web/by-user', async (req, res) => {
          si.mrp,
          si.size,
          si.colour,
-         si.ean_code,
+         COALESCE(NULLIF(si.ean_code,''), bc.ean_code, '') AS ean_code,
          COALESCE(
            NULLIF(si.image_url,''),
+           NULLIF(pci.image_url,''),
+           NULLIF(v.image_url,''),
            NULLIF(pi.image_url,''),
            CASE
-             WHEN si.ean_code IS NOT NULL AND si.ean_code <> ''
-             THEN CONCAT('https://res.cloudinary.com/', $2::text, '/image/upload/f_auto,q_auto/products/', si.ean_code)
+             WHEN COALESCE(NULLIF(si.ean_code,''), bc.ean_code, '') <> ''
+             THEN CONCAT('https://res.cloudinary.com/', $2::text, '/image/upload/f_auto,q_auto/products/', COALESCE(NULLIF(si.ean_code,''), bc.ean_code))
              ELSE NULL
            END
          ) AS image_url,
-         p.name  AS product_name,
+         p.name AS product_name,
          p.brand_name
        FROM sale_items si
        LEFT JOIN product_variants v ON v.id = si.variant_id
        LEFT JOIN products p ON p.id = v.product_id
-       LEFT JOIN product_images pi ON pi.ean_code = si.ean_code
+       LEFT JOIN product_colour_images pci
+         ON pci.product_id = p.id
+        AND LOWER(BTRIM(pci.colour)) = LOWER(BTRIM(COALESCE(NULLIF(si.colour,''), v.colour)))
+       LEFT JOIN LATERAL (
+         SELECT ean_code
+         FROM barcodes b
+         WHERE b.variant_id = v.id
+         ORDER BY b.id ASC
+         LIMIT 1
+       ) bc ON TRUE
+       LEFT JOIN product_images pi ON pi.ean_code = COALESCE(NULLIF(si.ean_code,''), bc.ean_code)
        WHERE si.sale_id = ANY($1::uuid[])`,
       [ids, cloud]
     )
@@ -632,22 +694,34 @@ router.get('/web/:id', async (req, res) => {
          si.mrp,
          si.size,
          si.colour,
-         si.ean_code,
+         COALESCE(NULLIF(si.ean_code,''), bc.ean_code, '') AS ean_code,
          COALESCE(
            NULLIF(si.image_url,''),
+           NULLIF(pci.image_url,''),
+           NULLIF(v.image_url,''),
            NULLIF(pi.image_url,''),
            CASE
-             WHEN si.ean_code IS NOT NULL AND si.ean_code <> ''
-             THEN CONCAT('https://res.cloudinary.com/', $2::text, '/image/upload/f_auto,q_auto/products/', si.ean_code)
+             WHEN COALESCE(NULLIF(si.ean_code,''), bc.ean_code, '') <> ''
+             THEN CONCAT('https://res.cloudinary.com/', $2::text, '/image/upload/f_auto,q_auto/products/', COALESCE(NULLIF(si.ean_code,''), bc.ean_code))
              ELSE NULL
            END
          ) AS image_url,
-         p.name  AS product_name,
+         p.name AS product_name,
          p.brand_name
        FROM sale_items si
        LEFT JOIN product_variants v ON v.id = si.variant_id
        LEFT JOIN products p ON p.id = v.product_id
-       LEFT JOIN product_images pi ON pi.ean_code = si.ean_code
+       LEFT JOIN product_colour_images pci
+         ON pci.product_id = p.id
+        AND LOWER(BTRIM(pci.colour)) = LOWER(BTRIM(COALESCE(NULLIF(si.colour,''), v.colour)))
+       LEFT JOIN LATERAL (
+         SELECT ean_code
+         FROM barcodes b
+         WHERE b.variant_id = v.id
+         ORDER BY b.id ASC
+         LIMIT 1
+       ) bc ON TRUE
+       LEFT JOIN product_images pi ON pi.ean_code = COALESCE(NULLIF(si.ean_code,''), bc.ean_code)
        WHERE si.sale_id = $1::uuid`,
       [id, cloud]
     )
@@ -766,22 +840,34 @@ if (!isSuper) {
          si.mrp,
          si.size,
          si.colour,
-         si.ean_code,
+         COALESCE(NULLIF(si.ean_code,''), bc.ean_code, '') AS ean_code,
          COALESCE(
            NULLIF(si.image_url,''),
+           NULLIF(pci.image_url,''),
+           NULLIF(v.image_url,''),
            NULLIF(pi.image_url,''),
            CASE
-             WHEN si.ean_code IS NOT NULL AND si.ean_code <> ''
-             THEN CONCAT('https://res.cloudinary.com/', $2::text, '/image/upload/f_auto,q_auto/products/', si.ean_code)
+             WHEN COALESCE(NULLIF(si.ean_code,''), bc.ean_code, '') <> ''
+             THEN CONCAT('https://res.cloudinary.com/', $2::text, '/image/upload/f_auto,q_auto/products/', COALESCE(NULLIF(si.ean_code,''), bc.ean_code))
              ELSE NULL
            END
          ) AS image_url,
-         p.name  AS product_name,
+         p.name AS product_name,
          p.brand_name
        FROM sale_items si
        LEFT JOIN product_variants v ON v.id = si.variant_id
        LEFT JOIN products p ON p.id = v.product_id
-       LEFT JOIN product_images pi ON pi.ean_code = si.ean_code
+       LEFT JOIN product_colour_images pci
+         ON pci.product_id = p.id
+        AND LOWER(BTRIM(pci.colour)) = LOWER(BTRIM(COALESCE(NULLIF(si.colour,''), v.colour)))
+       LEFT JOIN LATERAL (
+         SELECT ean_code
+         FROM barcodes b
+         WHERE b.variant_id = v.id
+         ORDER BY b.id ASC
+         LIMIT 1
+       ) bc ON TRUE
+       LEFT JOIN product_images pi ON pi.ean_code = COALESCE(NULLIF(si.ean_code,''), bc.ean_code)
        WHERE si.sale_id = $1::uuid`,
       [id, cloud]
     )
@@ -805,9 +891,6 @@ if (!isSuper) {
   }
 })
 
-// ══════════════════════════════════════════════════════════════
-// ADMIN B2B STATUS UPDATE ROUTE
-// ══════════════════════════════════════════════════════════════
 router.post('/web/b2b-update-status', requireAuth, async (req, res) => {
   const client = await pool.connect()
   try {
@@ -815,8 +898,7 @@ router.post('/web/b2b-update-status', requireAuth, async (req, res) => {
     if (!sale_id) return res.status(400).json({ message: 'sale_id required' })
 
     await client.query('BEGIN')
-    
-    // Build the dynamic update query
+
     let updates = []
     let params = [sale_id]
     let paramIndex = 2
@@ -852,5 +934,4 @@ router.post('/web/b2b-update-status', requireAuth, async (req, res) => {
   }
 })
 
-// Ensure this stays at the absolute bottom of the file!
 module.exports = router
