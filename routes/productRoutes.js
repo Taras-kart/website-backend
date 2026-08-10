@@ -246,6 +246,7 @@ async function fetchImageList({ gender, limit }) {
       LEFT JOIN product_colour_images pci
         ON pci.product_id = p.id
        AND LOWER(BTRIM(pci.colour)) = LOWER(BTRIM(v.colour))
+       AND LOWER(BTRIM(COALESCE(pci.fit, ''))) = LOWER(BTRIM(COALESCE(v.fit, '')))
       LEFT JOIN LATERAL (
         SELECT ean_code FROM barcodes b WHERE b.variant_id = v.id ORDER BY id ASC LIMIT 1
       ) bc_self ON TRUE
@@ -255,6 +256,7 @@ async function fetchImageList({ gender, limit }) {
         JOIN products p2 ON p2.id = v2.product_id
         JOIN barcodes b2 ON b2.variant_id = v2.id
         WHERE p2.name = p.name AND p2.brand_name = p.brand_name AND v2.size = v.size AND v2.colour = v.colour
+          AND COALESCE(v2.fit,'') = COALESCE(v.fit,'')
         ORDER BY b2.id ASC
         LIMIT 1
       ) bc_any ON TRUE
@@ -311,6 +313,7 @@ const buildProductSelectSql = ({ where, branchIdx, cloudIdx }) => `
     p.pattern_code AS pattern_code,
     v.colour AS color,
     v.size AS size,
+    v.fit AS fit,
     v.mrp::numeric AS original_price_b2c,
     CASE
       WHEN v.b2c_discount_pct IS NOT NULL AND v.b2c_discount_pct > 0
@@ -364,6 +367,7 @@ const buildProductSelectSql = ({ where, branchIdx, cloudIdx }) => `
   LEFT JOIN product_colour_images pci
     ON pci.product_id = p.id
    AND LOWER(BTRIM(pci.colour)) = LOWER(BTRIM(v.colour))
+   AND LOWER(BTRIM(COALESCE(pci.fit, ''))) = LOWER(BTRIM(COALESCE(v.fit, '')))
   LEFT JOIN LATERAL (
     SELECT ean_code FROM barcodes b WHERE b.variant_id = v.id ORDER BY id ASC LIMIT 1
   ) bc_self ON TRUE
@@ -373,6 +377,7 @@ const buildProductSelectSql = ({ where, branchIdx, cloudIdx }) => `
     JOIN products p2 ON p2.id = v2.product_id
     JOIN barcodes b2 ON b2.variant_id = v2.id
     WHERE p2.name = p.name AND p2.brand_name = p.brand_name AND v2.size = v.size AND v2.colour = v.colour
+      AND COALESCE(v2.fit,'') = COALESCE(v.fit,'')
     ORDER BY b2.id ASC
     LIMIT 1
   ) bc_any ON TRUE
@@ -850,6 +855,7 @@ router.put('/:id(\\d+)', async (req, res) => {
       product_name,
       color,
       size,
+      fit,
       original_price_b2b,
       discount_b2b,
       final_price_b2b,
@@ -912,6 +918,8 @@ router.put('/:id(\\d+)', async (req, res) => {
       [product_name, brand, gender, productId]
     );
 
+    // fit stays unchanged if not explicitly supplied — avoids accidentally
+    // clearing an existing variant's fit when only price/stock is edited
     await client.query(
       `
       UPDATE product_variants
@@ -921,10 +929,11 @@ router.put('/:id(\\d+)', async (req, res) => {
         mrp = $3,
         b2b_discount_pct = $4,
         b2c_discount_pct = $5,
-        image_url = $6
+        image_url = $6,
+        fit = COALESCE($8, fit)
       WHERE id = $7
       `,
-      [color, size, mrp, b2bDiscount, b2cDiscount, image_url || null, variantId]
+      [color, size, mrp, b2bDiscount, b2cDiscount, image_url || null, variantId, fit != null ? String(fit) : null]
     );
 
     const branchId = getBranchIdFromReq(req);

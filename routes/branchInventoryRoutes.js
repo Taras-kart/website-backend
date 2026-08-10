@@ -158,7 +158,11 @@ function rowToPreparedRecord(raw) {
   const SIZE = cleanText(row.size);
   const COLOUR = cleanText(row.colour);
   const PATTERN = cleanText(row.pattern) || null;
-  const FITT = cleanText(row.fitt) || null;
+  // FITT is now a variant-level attribute (like SIZE/COLOUR), not product-level.
+  // Empty string (not null) so it participates consistently in the
+  // (product_id, size, colour, fit) uniqueness — NULL would behave
+  // differently in a unique constraint (each NULL is considered distinct).
+  const FITT = cleanText(row.fitt);
   const MarkCode = cleanText(row.markcode) || null;
   const MRP = toNumOrNull(row.mrp);
   const RSalePrice = toNumOrNull(row.rsaleprice);
@@ -503,6 +507,9 @@ if (!isSuperAdmin && (!branchId || branchId !== Number(req.user.branch_id))) ret
         try {
           await client.query('BEGIN');
 
+          // Product identity remains (name, brand_name, pattern_code, gender) —
+          // FIT no longer determines the product row. products.fit_type is kept
+          // updated too (harmless legacy field) but is no longer load-bearing.
           const pRes = await client.query(
             `INSERT INTO products (name, brand_name, pattern_code, fit_type, mark_code, gender)
              VALUES ($1, $2, $3, $4, $5, $6)
@@ -515,10 +522,13 @@ if (!isSuperAdmin && (!branchId || branchId !== Number(req.user.branch_id))) ret
 
           const productId = pRes.rows[0].id;
 
+          // FIT is now part of variant identity, alongside size and colour.
+          // ON CONFLICT target matches the new 4-column constraint
+          // product_variant_uq (product_id, size, colour, fit).
           const vRes = await client.query(
-            `INSERT INTO product_variants (product_id, size, colour, is_active, mrp, sale_price, cost_price, b2c_discount_pct, b2b_discount_pct)
-             VALUES ($1, $2, $3, TRUE, $4, $5, $6, $7, $8)
-             ON CONFLICT (product_id, size, colour)
+            `INSERT INTO product_variants (product_id, size, colour, fit, is_active, mrp, sale_price, cost_price, b2c_discount_pct, b2b_discount_pct)
+             VALUES ($1, $2, $3, $4, TRUE, $5, $6, $7, $8, $9)
+             ON CONFLICT (product_id, size, colour, fit)
              DO UPDATE SET is_active = TRUE,
                            mrp = EXCLUDED.mrp,
                            sale_price = EXCLUDED.sale_price,
@@ -526,7 +536,7 @@ if (!isSuperAdmin && (!branchId || branchId !== Number(req.user.branch_id))) ret
                            b2c_discount_pct = EXCLUDED.b2c_discount_pct,
                            b2b_discount_pct = EXCLUDED.b2b_discount_pct
              RETURNING id`,
-            [productId, prepared.SIZE, prepared.COLOUR, prepared.MRP, prepared.RSalePrice, prepared.CostPrice, prepared.B2CDiscount, prepared.B2BDiscount]
+            [productId, prepared.SIZE, prepared.COLOUR, prepared.FITT, prepared.MRP, prepared.RSalePrice, prepared.CostPrice, prepared.B2CDiscount, prepared.B2BDiscount]
           );
 
           const variantId = vRes.rows[0].id;
@@ -674,15 +684,20 @@ router.post('/:branchId/images/confirm', requireBranchAuth, async (req, res) => 
       const imageScope = cleanText(img.scope || img.image_scope || img.mode || bodyScope).toLowerCase();
       const requestedProductId = parseInt(img.product_id, 10);
       const requestedColour = cleanText(img.colour || img.color || '');
+      // FIT is optional on the payload — brands without a fit distinction
+      // simply send '' (empty string), which matches variants whose fit
+      // is also '' via the same LOWER(BTRIM()) comparison used elsewhere.
+      const requestedFit = cleanText(img.fit || '');
       const useShared = img.shared === true || sharedScopes.has(imageScope) || (Number.isFinite(requestedProductId) && requestedProductId > 0 && requestedColour);
 
       if (useShared) {
         let productId = Number.isFinite(requestedProductId) && requestedProductId > 0 ? requestedProductId : null;
         let colour = requestedColour;
+        let fit = requestedFit;
 
         if ((!productId || !colour) && ean) {
           const resolved = await client.query(
-            `SELECT pv.product_id, pv.colour
+            `SELECT pv.product_id, pv.colour, pv.fit
              FROM barcodes b
              JOIN product_variants pv ON pv.id = b.variant_id
              WHERE b.ean_code = $1
@@ -693,6 +708,7 @@ router.post('/:branchId/images/confirm', requireBranchAuth, async (req, res) => 
           if (resolved.rows.length) {
             productId = productId || Number(resolved.rows[0].product_id);
             colour = colour || cleanText(resolved.rows[0].colour);
+            if (!fit) fit = cleanText(resolved.rows[0].fit);
           }
         }
 
@@ -703,35 +719,41 @@ router.post('/:branchId/images/confirm', requireBranchAuth, async (req, res) => 
 
         const publicId = cleanText(img.cloudinary_public_id || img.public_id || '') || null;
 
+        // product_colour_images uniqueness is (product_id, colour, fit) —
+        // matches the migration applied earlier.
         await client.query(
-          `INSERT INTO product_colour_images (product_id, colour, image_url, cloudinary_public_id, created_at, updated_at)
-           VALUES ($1, $2, $3, $4, NOW(), NOW())
-           ON CONFLICT (product_id, (LOWER(BTRIM(colour))))
+          `INSERT INTO product_colour_images (product_id, colour, fit, image_url, cloudinary_public_id, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+           ON CONFLICT (product_id, (LOWER(BTRIM(colour))), (LOWER(BTRIM(COALESCE(fit, '')))))
            DO UPDATE SET image_url = EXCLUDED.image_url,
                          cloudinary_public_id = COALESCE(EXCLUDED.cloudinary_public_id, product_colour_images.cloudinary_public_id),
                          updated_at = NOW()`,
-          [productId, colour, url, publicId]
+          [productId, colour, fit, url, publicId]
         );
 
+        // Only variants matching BOTH colour AND fit get this image —
+        // this is what actually separates GOKUL's RN vs RNS images.
         await client.query(
           `UPDATE product_variants
-           SET image_url = $3
+           SET image_url = $4
            WHERE product_id = $1
-             AND LOWER(BTRIM(colour)) = LOWER(BTRIM($2))`,
-          [productId, colour, url]
+             AND LOWER(BTRIM(colour)) = LOWER(BTRIM($2))
+             AND LOWER(BTRIM(COALESCE(fit, ''))) = LOWER(BTRIM($3))`,
+          [productId, colour, fit, url]
         );
 
         await client.query(
           `INSERT INTO product_images (ean_code, image_url, uploaded_at)
-           SELECT b.ean_code, $3, NOW()
+           SELECT b.ean_code, $4, NOW()
            FROM product_variants pv
            JOIN barcodes b ON b.variant_id = pv.id
            WHERE pv.product_id = $1
              AND LOWER(BTRIM(pv.colour)) = LOWER(BTRIM($2))
+             AND LOWER(BTRIM(COALESCE(pv.fit, ''))) = LOWER(BTRIM($3))
            ON CONFLICT (ean_code)
            DO UPDATE SET image_url = EXCLUDED.image_url,
                          uploaded_at = NOW()`,
-          [productId, colour, url]
+          [productId, colour, fit, url]
         );
 
         sharedUpdated += 1;
@@ -800,6 +822,7 @@ if (!isSuperAdmin && (!branchId || branchId !== Number(req.user.branch_id))) ret
          v.id AS variant_id,
          v.size,
          v.colour,
+         v.fit,
          v.mrp,
          v.sale_price,
          v.cost_price,
@@ -813,12 +836,13 @@ if (!isSuperAdmin && (!branchId || branchId !== Number(req.user.branch_id))) ret
        LEFT JOIN product_colour_images pci
          ON pci.product_id = p.id
         AND LOWER(BTRIM(pci.colour)) = LOWER(BTRIM(v.colour))
+        AND LOWER(BTRIM(COALESCE(pci.fit, ''))) = LOWER(BTRIM(COALESCE(v.fit, '')))
        LEFT JOIN LATERAL (
          SELECT ean_code FROM barcodes bc WHERE bc.variant_id = v.id ORDER BY id ASC LIMIT 1
        ) bc ON TRUE
        LEFT JOIN product_images pi ON pi.ean_code = bc.ean_code
        WHERE ${where}
-       ORDER BY p.brand_name, p.name, v.size, v.colour`,
+       ORDER BY p.brand_name, p.name, v.size, v.colour, v.fit`,
       params
     );
     res.json(rows);

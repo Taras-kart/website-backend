@@ -15,6 +15,7 @@ router.get('/:ean', async (req, res) => {
          pv.id AS variant_id,
          pv.size,
          pv.colour,
+         pv.fit,
          pv.mrp::numeric AS mrp,
          pv.sale_price::numeric AS sale_price,
          pv.cost_price::numeric AS cost_price,
@@ -42,6 +43,7 @@ router.get('/:ean', async (req, res) => {
        LEFT JOIN public.product_colour_images pci
          ON pci.product_id = p.id
         AND LOWER(BTRIM(pci.colour)) = LOWER(BTRIM(pv.colour))
+        AND LOWER(BTRIM(COALESCE(pci.fit, ''))) = LOWER(BTRIM(COALESCE(pv.fit, '')))
        LEFT JOIN public.product_images pi ON pi.ean_code = b.ean_code
        WHERE b.ean_code = $1
        LIMIT 1`,
@@ -56,6 +58,7 @@ router.get('/:ean', async (req, res) => {
       variant_id: Number(row.variant_id),
       size: row.size,
       colour: row.colour,
+      fit: row.fit,
       mrp: row.mrp !== null ? Number(row.mrp) : null,
       sale_price: row.sale_price !== null ? Number(row.sale_price) : null,
       cost_price: row.cost_price !== null ? Number(row.cost_price) : null,

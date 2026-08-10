@@ -27,6 +27,7 @@ async function resolveVariantImage(db, variantId) {
        v.product_id,
        v.size,
        v.colour,
+       v.fit,
        COALESCE(bc.ean_code, '') AS ean_code,
        NULLIF(pci.image_url, '') AS shared_image_url,
        COALESCE(
@@ -43,6 +44,7 @@ async function resolveVariantImage(db, variantId) {
      LEFT JOIN product_colour_images pci
        ON pci.product_id = p.id
       AND LOWER(BTRIM(pci.colour)) = LOWER(BTRIM(v.colour))
+      AND LOWER(BTRIM(COALESCE(pci.fit, ''))) = LOWER(BTRIM(COALESCE(v.fit, '')))
      LEFT JOIN LATERAL (
        SELECT ean_code
        FROM barcodes b
@@ -616,6 +618,7 @@ router.get('/web/by-user', async (req, res) => {
        LEFT JOIN product_colour_images pci
          ON pci.product_id = p.id
         AND LOWER(BTRIM(pci.colour)) = LOWER(BTRIM(COALESCE(NULLIF(si.colour,''), v.colour)))
+        AND LOWER(BTRIM(COALESCE(pci.fit, ''))) = LOWER(BTRIM(COALESCE(v.fit, '')))
        LEFT JOIN LATERAL (
          SELECT ean_code
          FROM barcodes b
@@ -714,6 +717,7 @@ router.get('/web/:id', async (req, res) => {
        LEFT JOIN product_colour_images pci
          ON pci.product_id = p.id
         AND LOWER(BTRIM(pci.colour)) = LOWER(BTRIM(COALESCE(NULLIF(si.colour,''), v.colour)))
+        AND LOWER(BTRIM(COALESCE(pci.fit, ''))) = LOWER(BTRIM(COALESCE(v.fit, '')))
        LEFT JOIN LATERAL (
          SELECT ean_code
          FROM barcodes b
@@ -860,6 +864,7 @@ if (!isSuper) {
        LEFT JOIN product_colour_images pci
          ON pci.product_id = p.id
         AND LOWER(BTRIM(pci.colour)) = LOWER(BTRIM(COALESCE(NULLIF(si.colour,''), v.colour)))
+        AND LOWER(BTRIM(COALESCE(pci.fit, ''))) = LOWER(BTRIM(COALESCE(v.fit, '')))
        LEFT JOIN LATERAL (
          SELECT ean_code
          FROM barcodes b

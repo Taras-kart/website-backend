@@ -88,6 +88,7 @@ router.get('/:userId', async (req, res) => {
           p.gender,
           v.size,
           v.colour AS color,
+          v.fit,
           v.mrp::numeric AS mrp,
           v.sale_price::numeric AS sale_price,
           COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
@@ -103,6 +104,7 @@ router.get('/:userId', async (req, res) => {
         LEFT JOIN product_colour_images pci
           ON pci.product_id = p.id
          AND LOWER(BTRIM(pci.colour)) = LOWER(BTRIM(v.colour))
+         AND LOWER(BTRIM(COALESCE(pci.fit, ''))) = LOWER(BTRIM(COALESCE(v.fit, '')))
         LEFT JOIN LATERAL (
           SELECT ean_code
           FROM barcodes b
@@ -119,6 +121,7 @@ router.get('/:userId', async (req, res) => {
             AND p2.brand_name = p.brand_name
             AND v2.size = v.size
             AND v2.colour = v.colour
+            AND COALESCE(v2.fit,'') = COALESCE(v.fit,'')
           ORDER BY b2.id ASC
           LIMIT 1
         ) bc_any ON TRUE
@@ -135,6 +138,7 @@ router.get('/:userId', async (req, res) => {
         gender,
         color,
         size,
+        fit,
         selected_size,
         selected_color,
         quantity,
