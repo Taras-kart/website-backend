@@ -16,16 +16,16 @@ const HEADER_ALIASES = {
   productname: ['product', 'product name', 'item', 'item name', 'productname'],
   brandname: ['brand', 'brand name', 'brandname'],
   costprice: ['cost', 'purchase cost', 'costprice'],
-  purchaseqty: ['clqty', 'qty', 'quantity', 'purchase qty', 'purchaseqty'],
-  eancode: ['ean', 'barcode', 'bar code', 'ean code', 'eancode'],
+eancode: ['ean', 'barcode', 'bar code', 'ean code', 'eancode', 'eancode/style', 'ean code/style'],
+purchaseqty: ['clqty', 'qty', 'quantity', 'purchase qty', 'purchaseqty', 'avb quantity pcs', 'avb qty', 'available quantity'],
+b2cdiscount: ['b2cdiscount', 'b2c discount', 'discount_b2c', 'b2c disc', 'b2c_disc', 'b to c discount'],
   mrp: ['mrp', '   mrp', 'mrp ', ' retail mrp ', 'mrp'],
   rsaleprice: ['retailprice', 'saleprice', 'sale price', 'retail price', 'rsp', 'rsaleprice'],
   markcode: ['mark code', 'mark', 'marking', 'markcode'],
   size: ['size', 'size '],
   colour: ['colour', 'color', 'colour ', 'color '],
-  pattern: ['pattern code', 'style', 'style code', 'pattern'],
+  pattern: ['pattern code', 'style', 'style code', 'pattern', 'design pattern'],
   fitt: ['fit', 'fit type', 'fitt'],
-  b2cdiscount: ['b2cdiscount', 'b2c discount', 'discount_b2c', 'b2c disc', 'b2c_disc'],
   b2bdiscount: ['b2bdiscount', 'b2b discount', 'discount_b2b', 'b2b disc', 'b2b_disc']
 };
 
