@@ -2,90 +2,127 @@ const express = require('express')
 const pool = require('../db')
 
 const router = express.Router()
+const quote = value => `"${String(value).replace(/"/g, '""')}"`
 
 router.get('/', async (req, res) => {
   try {
-    const result = await pool.query(`
-      WITH RECURSIVE tree AS (
-        SELECT id, parent_id, gender, name, slug, level, sort_order, is_active, name::text AS category_path, UPPER(name)::text AS root_name
-        FROM product_categories
-        WHERE parent_id IS NULL
-        UNION ALL
-        SELECT pc.id, pc.parent_id, COALESCE(pc.gender, tree.gender), pc.name, pc.slug, pc.level, pc.sort_order, pc.is_active, tree.category_path || ' > ' || pc.name, tree.root_name
-        FROM product_categories pc
-        JOIN tree ON tree.id = pc.parent_id
-      ), descendants AS (
-        SELECT id AS ancestor_id, id AS category_id
-        FROM product_categories
-        UNION ALL
-        SELECT descendants.ancestor_id, pc.id
-        FROM descendants
-        JOIN product_categories pc ON pc.parent_id = descendants.category_id
-      ), counts AS (
-        SELECT descendants.ancestor_id AS category_id, COUNT(DISTINCT products.id)::int AS product_count
-        FROM descendants
-        JOIN products ON products.category_id = descendants.category_id
-          AND products.is_active = TRUE
-          AND products.deleted_at IS NULL
-        GROUP BY descendants.ancestor_id
-      ), image_candidates AS (
-        SELECT
-          descendants.ancestor_id AS category_id,
-          barcodes.ean_code,
-          COALESCE(
-            NULLIF(to_jsonb(product_images) ->> 'image_url', ''),
-            NULLIF(to_jsonb(product_images) ->> 'imageUrl', ''),
-            NULLIF(to_jsonb(product_images) ->> 'url', ''),
-            NULLIF(to_jsonb(product_images) ->> 'secure_url', '')
-          ) AS image_url,
-          LOWER(COALESCE(to_jsonb(product_images) ->> 'image_type', '')) AS image_type,
-          ROW_NUMBER() OVER (
-            PARTITION BY descendants.ancestor_id
-            ORDER BY
-              CASE WHEN LOWER(COALESCE(to_jsonb(product_images) ->> 'image_type', '')) = 'front' THEN 0 ELSE 1 END,
-              CASE WHEN COALESCE(
-                NULLIF(to_jsonb(product_images) ->> 'image_url', ''),
-                NULLIF(to_jsonb(product_images) ->> 'imageUrl', ''),
-                NULLIF(to_jsonb(product_images) ->> 'url', ''),
-                NULLIF(to_jsonb(product_images) ->> 'secure_url', '')
-              ) IS NOT NULL THEN 0 ELSE 1 END,
-              products.updated_at DESC,
-              products.id DESC
-          ) AS image_rank
-        FROM descendants
-        JOIN products ON products.category_id = descendants.category_id
-          AND products.is_active = TRUE
-          AND products.deleted_at IS NULL
-        JOIN product_variants ON product_variants.product_id = products.id
-          AND product_variants.is_active = TRUE
-        JOIN barcodes ON barcodes.variant_id = product_variants.id
-        LEFT JOIN product_images ON product_images.ean_code = barcodes.ean_code
-        WHERE barcodes.ean_code IS NOT NULL
-          AND TRIM(barcodes.ean_code) <> ''
-      )
-      SELECT
-        tree.id,
-        tree.parent_id,
-        tree.gender,
-        tree.name,
-        tree.slug,
-        tree.level,
-        tree.sort_order,
-        tree.category_path,
-        tree.root_name,
-        COALESCE(counts.product_count, 0) AS product_count,
-        image_candidates.image_url AS representative_image,
-        image_candidates.ean_code AS representative_ean
-      FROM tree
-      LEFT JOIN counts ON counts.category_id = tree.id
-      LEFT JOIN image_candidates ON image_candidates.category_id = tree.id
-        AND image_candidates.image_rank = 1
-      WHERE tree.is_active = TRUE
-      ORDER BY tree.root_name, tree.level, tree.sort_order, tree.name
-    `)
-    return res.json({ categories: result.rows })
+    const [categoryResult, productResult, schemaResult] = await Promise.all([
+      pool.query(`SELECT id, parent_id, gender, name, slug, level, sort_order FROM product_categories WHERE is_active = TRUE ORDER BY level, sort_order, name`),
+      pool.query(`SELECT id, category_id FROM products WHERE is_active = TRUE AND deleted_at IS NULL AND category_id IS NOT NULL`),
+      pool.query(`SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name IN ('product_images', 'product_variants', 'barcodes')`)
+    ])
+
+    const categories = categoryResult.rows
+    const products = productResult.rows
+    const categoryById = new Map(categories.map(category => [Number(category.id), category]))
+    const countSets = new Map(categories.map(category => [Number(category.id), new Set()]))
+    const imageByCategory = new Map()
+
+    const ancestorsOf = categoryId => {
+      const result = []
+      const visited = new Set()
+      let current = categoryById.get(Number(categoryId))
+      while (current && !visited.has(Number(current.id))) {
+        visited.add(Number(current.id))
+        result.push(Number(current.id))
+        current = current.parent_id == null ? null : categoryById.get(Number(current.parent_id))
+      }
+      return result
+    }
+
+    products.forEach(product => {
+      ancestorsOf(product.category_id).forEach(categoryId => countSets.get(categoryId)?.add(Number(product.id)))
+    })
+
+    const columns = new Map()
+    schemaResult.rows.forEach(row => {
+      if (!columns.has(row.table_name)) columns.set(row.table_name, new Set())
+      columns.get(row.table_name).add(row.column_name)
+    })
+
+    const imageColumns = columns.get('product_images') || new Set()
+    const variantColumns = columns.get('product_variants') || new Set()
+    const barcodeColumns = columns.get('barcodes') || new Set()
+    const firstColumn = (set, names) => names.find(name => set.has(name)) || ''
+    const imageUrlColumn = firstColumn(imageColumns, ['image_url', 'url', 'secure_url', 'imageUrl'])
+    const imageTypeColumn = firstColumn(imageColumns, ['image_type', 'type'])
+    const imageEanColumn = firstColumn(imageColumns, ['ean_code', 'barcode', 'ean'])
+    const barcodeEanColumn = firstColumn(barcodeColumns, ['ean_code', 'barcode', 'ean'])
+    const imageProductColumn = firstColumn(imageColumns, ['product_id'])
+    const imageVariantColumn = firstColumn(imageColumns, ['variant_id', 'product_variant_id'])
+    const variantProductColumn = firstColumn(variantColumns, ['product_id'])
+    const barcodeVariantColumn = firstColumn(barcodeColumns, ['variant_id', 'product_variant_id'])
+    let imageRows = []
+
+    try {
+      if (imageProductColumn && imageUrlColumn) {
+        const typeOrder = imageTypeColumn ? `CASE WHEN LOWER(COALESCE(pi.${quote(imageTypeColumn)}::text, '')) = 'front' THEN 0 ELSE 1 END,` : ''
+        const result = await pool.query(`SELECT DISTINCT ON (p.id) p.id AS product_id, p.category_id, pi.${quote(imageUrlColumn)}::text AS image_url, NULL::text AS ean_code FROM products p JOIN product_images pi ON pi.${quote(imageProductColumn)} = p.id WHERE p.is_active = TRUE AND p.deleted_at IS NULL AND NULLIF(TRIM(pi.${quote(imageUrlColumn)}::text), '') IS NOT NULL ORDER BY p.id, ${typeOrder} p.updated_at DESC`)
+        imageRows = result.rows
+      } else if (variantProductColumn && imageVariantColumn && imageUrlColumn) {
+        const typeOrder = imageTypeColumn ? `CASE WHEN LOWER(COALESCE(pi.${quote(imageTypeColumn)}::text, '')) = 'front' THEN 0 ELSE 1 END,` : ''
+        const result = await pool.query(`SELECT DISTINCT ON (p.id) p.id AS product_id, p.category_id, pi.${quote(imageUrlColumn)}::text AS image_url, NULL::text AS ean_code FROM products p JOIN product_variants pv ON pv.${quote(variantProductColumn)} = p.id JOIN product_images pi ON pi.${quote(imageVariantColumn)} = pv.id WHERE p.is_active = TRUE AND p.deleted_at IS NULL AND NULLIF(TRIM(pi.${quote(imageUrlColumn)}::text), '') IS NOT NULL ORDER BY p.id, ${typeOrder} p.updated_at DESC`)
+        imageRows = result.rows
+      } else if (variantProductColumn && barcodeVariantColumn && barcodeEanColumn) {
+        const imageJoin = imageEanColumn ? `LEFT JOIN product_images pi ON pi.${quote(imageEanColumn)}::text = b.${quote(barcodeEanColumn)}::text` : ''
+        const imageSelect = imageUrlColumn ? `pi.${quote(imageUrlColumn)}::text` : 'NULL::text'
+        const typeOrder = imageTypeColumn && imageEanColumn ? `CASE WHEN LOWER(COALESCE(pi.${quote(imageTypeColumn)}::text, '')) = 'front' THEN 0 ELSE 1 END,` : ''
+        const result = await pool.query(`SELECT DISTINCT ON (p.id) p.id AS product_id, p.category_id, ${imageSelect} AS image_url, b.${quote(barcodeEanColumn)}::text AS ean_code FROM products p JOIN product_variants pv ON pv.${quote(variantProductColumn)} = p.id JOIN barcodes b ON b.${quote(barcodeVariantColumn)} = pv.id ${imageJoin} WHERE p.is_active = TRUE AND p.deleted_at IS NULL AND NULLIF(TRIM(b.${quote(barcodeEanColumn)}::text), '') IS NOT NULL ORDER BY p.id, ${typeOrder} CASE WHEN ${imageSelect} IS NOT NULL THEN 0 ELSE 1 END, p.updated_at DESC`)
+        imageRows = result.rows
+      }
+    } catch (error) {
+      imageRows = []
+    }
+
+    imageRows.forEach(row => {
+      const image = String(row.image_url || '').trim()
+      const ean = String(row.ean_code || '').trim()
+      if (!image && !ean) return
+      ancestorsOf(row.category_id).forEach(categoryId => {
+        if (!imageByCategory.has(categoryId)) imageByCategory.set(categoryId, { image, ean })
+      })
+    })
+
+    const rootNameOf = category => {
+      let current = category
+      const visited = new Set()
+      while (current?.parent_id != null && !visited.has(Number(current.id))) {
+        visited.add(Number(current.id))
+        current = categoryById.get(Number(current.parent_id)) || current
+      }
+      return String(current?.name || category.gender || '').toUpperCase()
+    }
+
+    const pathOf = category => {
+      const names = []
+      const visited = new Set()
+      let current = category
+      while (current && !visited.has(Number(current.id))) {
+        visited.add(Number(current.id))
+        names.unshift(current.name)
+        current = current.parent_id == null ? null : categoryById.get(Number(current.parent_id))
+      }
+      return names.join(' > ')
+    }
+
+    const response = categories.map(category => {
+      const image = imageByCategory.get(Number(category.id)) || {}
+      return {
+        ...category,
+        category_path: pathOf(category),
+        root_name: rootNameOf(category),
+        product_count: countSets.get(Number(category.id))?.size || 0,
+        representative_image: image.image || '',
+        representative_ean: image.ean || ''
+      }
+    })
+
+    return res.json({ categories: response })
   } catch (error) {
-    return res.status(500).json({ message: 'Unable to load categories' })
+    return res.status(500).json({
+      message: 'Unable to load categories',
+      error: process.env.NODE_ENV === 'production' ? undefined : String(error?.message || error)
+    })
   }
 })
 
