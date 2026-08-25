@@ -81,6 +81,29 @@ function normGender(v) {
   return '';
 }
 
+function positiveInteger(v) {
+  const n = Number.parseInt(String(v || ''), 10);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+async function loadImportCategory(db, categoryId, gender) {
+  const result = await db.query(
+    `SELECT id, parent_id, gender, name, slug, level, is_active
+     FROM product_categories
+     WHERE id = $1`,
+    [categoryId]
+  );
+
+  if (!result.rows.length) return { error: 'Selected category does not exist' };
+
+  const category = result.rows[0];
+  if (!category.is_active) return { error: 'Selected category is inactive' };
+  if (category.parent_id == null || Number(category.level) < 1) return { error: 'Select a product category, not a root gender' };
+  if (normGender(category.gender) !== gender) return { error: 'Selected category does not belong to the selected gender' };
+
+  return { category };
+}
+
 function requireBranchAuth(req, res, next) {
   const hdr = req.headers.authorization || '';
   const token = hdr.startsWith('Bearer ') ? hdr.slice(7) : '';
@@ -158,10 +181,6 @@ function rowToPreparedRecord(raw) {
   const SIZE = cleanText(row.size);
   const COLOUR = cleanText(row.colour);
   const PATTERN = cleanText(row.pattern) || null;
-  // FITT is now a variant-level attribute (like SIZE/COLOUR), not product-level.
-  // Empty string (not null) so it participates consistently in the
-  // (product_id, size, colour, fit) uniqueness — NULL would behave
-  // differently in a unique constraint (each NULL is considered distinct).
   const FITT = cleanText(row.fitt);
   const MarkCode = cleanText(row.markcode) || null;
   const MRP = toNumOrNull(row.mrp);
@@ -254,10 +273,13 @@ router.get('/:branchId/import-jobs', requireBranchAuth, async (req, res) => {
 if (!isSuperAdmin && (!branchId || branchId !== Number(req.user.branch_id))) return res.status(403).json({ message: 'Forbidden' });
   try {
     const { rows } = await pool.query(
-      `SELECT id, file_name, file_url, uploaded_by, status_enum, rows_total, rows_success, rows_error, uploaded_at, completed_at, branch_id, gender
-       FROM import_jobs
-       WHERE branch_id = $1
-       ORDER BY id DESC
+      `SELECT j.id, j.file_name, j.file_url, j.uploaded_by, j.status_enum, j.rows_total, j.rows_success, j.rows_error,
+              j.uploaded_at, j.completed_at, j.branch_id, j.gender, j.category_id,
+              c.name AS category_name, c.slug AS category_slug
+       FROM import_jobs j
+       LEFT JOIN product_categories c ON c.id = j.category_id
+       WHERE j.branch_id = $1
+       ORDER BY j.id DESC
        LIMIT 100`,
       [branchId]
     );
@@ -281,11 +303,25 @@ if (!isSuperAdmin && (!branchId || branchId !== Number(req.user.branch_id))) ret
 
     let job;
     if (jobId) {
-      const r = await pool.query(`SELECT * FROM import_jobs WHERE id=$1 AND branch_id=$2`, [jobId, branchId]);
+      const r = await pool.query(
+        `SELECT j.*, c.name AS category_name, c.slug AS category_slug
+         FROM import_jobs j
+         LEFT JOIN product_categories c ON c.id = j.category_id
+         WHERE j.id=$1 AND j.branch_id=$2`,
+        [jobId, branchId]
+      );
       if (!r.rows.length) return res.status(404).json({ message: 'Job not found' });
       job = r.rows[0];
     } else {
-      const r = await pool.query(`SELECT * FROM import_jobs WHERE branch_id=$1 ORDER BY id DESC LIMIT 1`, [branchId]);
+      const r = await pool.query(
+        `SELECT j.*, c.name AS category_name, c.slug AS category_slug
+         FROM import_jobs j
+         LEFT JOIN product_categories c ON c.id = j.category_id
+         WHERE j.branch_id=$1
+         ORDER BY j.id DESC
+         LIMIT 1`,
+        [branchId]
+      );
       if (!r.rows.length) return res.json({ job: null, rows: [], nextOffset: offset, total: 0 });
       job = r.rows[0];
     }
@@ -322,7 +358,10 @@ if (!isSuperAdmin && (!branchId || branchId !== Number(req.user.branch_id))) ret
         rows_error: job.rows_error,
         uploaded_at: job.uploaded_at,
         completed_at: job.completed_at,
-        gender: job.gender
+        gender: job.gender,
+        category_id: job.category_id,
+        category_name: job.category_name,
+        category_slug: job.category_slug
       },
       rows: rowsQ.rows,
       nextOffset,
@@ -340,7 +379,10 @@ if (!isSuperAdmin && (!branchId || branchId !== Number(req.user.branch_id))) ret
   if (!req.file) return res.status(400).json({ message: 'File required' });
 
   const gender = normGender(req.body?.gender);
-  if (!gender) return res.status(400).json({ message: 'Category is required (MEN/WOMEN/KIDS)' });
+  if (!gender) return res.status(400).json({ message: 'Gender is required (MEN/WOMEN/KIDS)' });
+
+  const categoryId = positiveInteger(req.body?.categoryId || req.body?.category_id);
+  if (!categoryId) return res.status(400).json({ message: 'Category is required' });
 
   const token = process.env.BLOB_READ_WRITE_TOKEN || process.env.VERCEL_BLOB_READ_WRITE_TOKEN || process.env.VERCEL_BLOB_RW_TOKEN;
   if (!token) return res.status(500).json({ message: 'Upload store not configured' });
@@ -349,6 +391,10 @@ if (!isSuperAdmin && (!branchId || branchId !== Number(req.user.branch_id))) ret
 
   try {
     await ensureImportRowsTable();
+
+    const categoryCheck = await loadImportCategory(client, categoryId, gender);
+    if (categoryCheck.error) return res.status(400).json({ message: categoryCheck.error });
+    const category = categoryCheck.category;
 
     const enumValues = await getAllowedImportRowStatuses();
     const createdStatus = resolveCreatedStatus(enumValues);
@@ -376,10 +422,10 @@ if (!isSuperAdmin && (!branchId || branchId !== Number(req.user.branch_id))) ret
     await client.query('BEGIN');
 
     const { rows } = await client.query(
-      `INSERT INTO import_jobs (file_name, file_url, uploaded_by, status_enum, rows_total, rows_success, rows_error, branch_id, gender)
-       VALUES ($1, $2, $3, 'PENDING', $4, 0, 0, $5, $6)
-       RETURNING id, file_name, file_url, uploaded_by, status_enum, rows_total, rows_success, rows_error, uploaded_at, completed_at, branch_id, gender`,
-      [req.file.originalname || name, stored.url, req.user.id, preparedRows.length, branchId, gender]
+      `INSERT INTO import_jobs (file_name, file_url, uploaded_by, status_enum, rows_total, rows_success, rows_error, branch_id, gender, category_id)
+       VALUES ($1, $2, $3, 'PENDING', $4, 0, 0, $5, $6, $7)
+       RETURNING id, file_name, file_url, uploaded_by, status_enum, rows_total, rows_success, rows_error, uploaded_at, completed_at, branch_id, gender, category_id`,
+      [req.file.originalname || name, stored.url, req.user.id, preparedRows.length, branchId, gender, categoryId]
     );
 
     const job = rows[0];
@@ -389,7 +435,7 @@ if (!isSuperAdmin && (!branchId || branchId !== Number(req.user.branch_id))) ret
     }
 
     await client.query('COMMIT');
-    res.status(201).json(job);
+    res.status(201).json({ ...job, category_name: category.name, category_slug: category.slug });
   } catch (e) {
     await client.query('ROLLBACK');
     res.status(500).json({ message: e.message || 'Server error' });
@@ -419,7 +465,7 @@ if (!isSuperAdmin && (!branchId || branchId !== Number(req.user.branch_id))) ret
     }
 
     const j = await pool.query(
-      `SELECT id, file_url, status_enum, rows_total, rows_success, rows_error, gender
+      `SELECT id, file_url, status_enum, rows_total, rows_success, rows_error, gender, category_id
        FROM import_jobs
        WHERE id = $1 AND branch_id = $2`,
       [jobId, branchId]
@@ -429,6 +475,13 @@ if (!isSuperAdmin && (!branchId || branchId !== Number(req.user.branch_id))) ret
 
     const job = j.rows[0];
     const st = String(job.status_enum || '').toUpperCase();
+
+    const gender = normGender(job.gender);
+    const categoryId = positiveInteger(job.category_id);
+    if (!gender || !categoryId) return res.status(400).json({ message: 'Import job is missing its gender or category' });
+
+    const categoryCheck = await loadImportCategory(pool, categoryId, gender);
+    if (categoryCheck.error) return res.status(400).json({ message: categoryCheck.error });
 
     if (st === 'COMPLETE' || st === 'PARTIAL' || st === 'FAILED') {
       return res.json({
@@ -482,8 +535,6 @@ if (!isSuperAdmin && (!branchId || branchId !== Number(req.user.branch_id))) ret
         });
       }
 
-      const gender = normGender(job.gender);
-
       for (const batchRow of rowsToProcess) {
         const raw = batchRow.raw_row_json || {};
         const prepared = rowToPreparedRecord(raw);
@@ -507,24 +558,22 @@ if (!isSuperAdmin && (!branchId || branchId !== Number(req.user.branch_id))) ret
         try {
           await client.query('BEGIN');
 
-          // Product identity remains (name, brand_name, pattern_code, gender) —
-          // FIT no longer determines the product row. products.fit_type is kept
-          // updated too (harmless legacy field) but is no longer load-bearing.
           const pRes = await client.query(
-            `INSERT INTO products (name, brand_name, pattern_code, fit_type, mark_code, gender)
-             VALUES ($1, $2, $3, $4, $5, $6)
+            `INSERT INTO products (name, brand_name, pattern_code, fit_type, mark_code, gender, category_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
              ON CONFLICT (name, brand_name, pattern_code, gender)
              DO UPDATE SET fit_type = EXCLUDED.fit_type,
-                           mark_code = EXCLUDED.mark_code
+                           mark_code = EXCLUDED.mark_code,
+                           category_id = EXCLUDED.category_id,
+                           is_active = TRUE,
+                           deleted_at = NULL,
+                           updated_at = NOW()
              RETURNING id`,
-            [prepared.ProductName, prepared.BrandName, prepared.PATTERN, prepared.FITT, prepared.MarkCode, gender || null]
+            [prepared.ProductName, prepared.BrandName, prepared.PATTERN, prepared.FITT, prepared.MarkCode, gender, categoryId]
           );
 
           const productId = pRes.rows[0].id;
 
-          // FIT is now part of variant identity, alongside size and colour.
-          // ON CONFLICT target matches the new 4-column constraint
-          // product_variant_uq (product_id, size, colour, fit).
           const vRes = await client.query(
             `INSERT INTO product_variants (product_id, size, colour, fit, is_active, mrp, sale_price, cost_price, b2c_discount_pct, b2b_discount_pct)
              VALUES ($1, $2, $3, $4, TRUE, $5, $6, $7, $8, $9)
@@ -684,9 +733,6 @@ router.post('/:branchId/images/confirm', requireBranchAuth, async (req, res) => 
       const imageScope = cleanText(img.scope || img.image_scope || img.mode || bodyScope).toLowerCase();
       const requestedProductId = parseInt(img.product_id, 10);
       const requestedColour = cleanText(img.colour || img.color || '');
-      // FIT is optional on the payload — brands without a fit distinction
-      // simply send '' (empty string), which matches variants whose fit
-      // is also '' via the same LOWER(BTRIM()) comparison used elsewhere.
       const requestedFit = cleanText(img.fit || '');
       const useShared = img.shared === true || sharedScopes.has(imageScope) || (Number.isFinite(requestedProductId) && requestedProductId > 0 && requestedColour);
 
@@ -719,8 +765,6 @@ router.post('/:branchId/images/confirm', requireBranchAuth, async (req, res) => 
 
         const publicId = cleanText(img.cloudinary_public_id || img.public_id || '') || null;
 
-        // product_colour_images uniqueness is (product_id, colour, fit) —
-        // matches the migration applied earlier.
         await client.query(
           `INSERT INTO product_colour_images (product_id, colour, fit, image_url, cloudinary_public_id, created_at, updated_at)
            VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
@@ -731,8 +775,6 @@ router.post('/:branchId/images/confirm', requireBranchAuth, async (req, res) => 
           [productId, colour, fit, url, publicId]
         );
 
-        // Only variants matching BOTH colour AND fit get this image —
-        // this is what actually separates GOKUL's RN vs RNS images.
         await client.query(
           `UPDATE product_variants
            SET image_url = $4
