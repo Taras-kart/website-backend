@@ -310,7 +310,11 @@ const buildProductSelectSql = ({ where, branchIdx, cloudIdx }) => `
     p.name AS product_name,
     p.brand_name AS brand,
     p.gender AS gender,
+    p.category_id AS category_id,
+    pc.name AS category_name,
+    pc.slug AS category_slug,
     p.pattern_code AS pattern_code,
+    p.fit_type AS fit_type,
     v.colour AS color,
     v.size AS size,
     v.fit AS fit,
@@ -364,6 +368,7 @@ const buildProductSelectSql = ({ where, branchIdx, cloudIdx }) => `
     ) AS image_url
   FROM products p
   JOIN product_variants v ON v.product_id = p.id
+  LEFT JOIN product_categories pc ON pc.id = p.category_id
   LEFT JOIN product_colour_images pci
     ON pci.product_id = p.id
    AND LOWER(BTRIM(pci.colour)) = LOWER(BTRIM(v.colour))
@@ -436,6 +441,9 @@ const buildExpandedCandidatesFromRow = (r) => {
   const productName = String(r.product_name || '').trim()
   const brand = String(r.brand || '').trim()
   const color = String(r.color || '').trim()
+  const categoryName = String(r.category_name || '').trim()
+  const patternCode = String(r.pattern_code || '').trim()
+  const fitType = String(r.fit_type || '').trim()
   const g = toGender(r.gender || '')
   const gLabel = g ? (GENDER_LABELS[g] || g) : ''
 
@@ -443,6 +451,9 @@ const buildExpandedCandidatesFromRow = (r) => {
   if (productName) basePhrases.push(productName)
   if (brand) basePhrases.push(brand)
   if (color) basePhrases.push(color)
+  if (categoryName) basePhrases.push(categoryName)
+  if (patternCode) basePhrases.push(patternCode)
+  if (fitType) basePhrases.push(fitType)
   if (gLabel) basePhrases.push(gLabel)
 
   for (const p of basePhrases) addCandidate(out, p)
@@ -479,6 +490,12 @@ const buildExpandedCandidatesFromRow = (r) => {
   if (brand && productName) {
     addCandidate(out, `${brand} ${productName}`)
     if (gLabel) addCandidate(out, `${gLabel} ${brand} ${productName}`)
+  }
+
+  if (categoryName && productName) {
+    addCandidate(out, `${categoryName} ${productName}`)
+    addCandidate(out, `${productName} ${categoryName}`)
+    if (gLabel) addCandidate(out, `${gLabel} ${categoryName}`)
   }
 
   if (color && productName) {
@@ -522,9 +539,9 @@ router.get('/', async (req, res) => {
       for (const t of tokens) {
         params.push(`%${t}%`)
         const idx = params.length
-        parts.push(`(p.name ILIKE $${idx} OR p.brand_name ILIKE $${idx} OR v.colour ILIKE $${idx} OR p.gender ILIKE $${idx})`)
+        parts.push(`(p.name ILIKE $${idx} OR p.brand_name ILIKE $${idx} OR v.colour ILIKE $${idx} OR p.gender ILIKE $${idx} OR COALESCE(pc.name, '') ILIKE $${idx} OR COALESCE(p.pattern_code, '') ILIKE $${idx} OR COALESCE(p.fit_type, '') ILIKE $${idx})`)
       }
-      where += ` AND (${parts.join(' OR ')})`
+      where += ` AND (${parts.join(' AND ')})`
     }
 
     if (priceMin != null) {
@@ -590,13 +607,13 @@ router.get('/suggest', async (req, res) => {
       for (const t of tokens) {
         params.push(`%${t}%`)
         const idx = params.length
-        parts.push(`(p.name ILIKE $${idx} OR p.brand_name ILIKE $${idx} OR v.colour ILIKE $${idx} OR p.gender ILIKE $${idx})`)
+        parts.push(`(p.name ILIKE $${idx} OR p.brand_name ILIKE $${idx} OR v.colour ILIKE $${idx} OR p.gender ILIKE $${idx} OR COALESCE(pc.name, '') ILIKE $${idx} OR COALESCE(p.pattern_code, '') ILIKE $${idx} OR COALESCE(p.fit_type, '') ILIKE $${idx})`)
       }
-      where += ` AND (${parts.join(' OR ')})`
+      where += ` AND (${parts.join(' AND ')})`
     } else {
       params.push(`%${String(q).trim()}%`)
       const idx = params.length
-      where += ` AND (p.name ILIKE $${idx} OR p.brand_name ILIKE $${idx} OR v.colour ILIKE $${idx} OR p.gender ILIKE $${idx})`
+      where += ` AND (p.name ILIKE $${idx} OR p.brand_name ILIKE $${idx} OR v.colour ILIKE $${idx} OR p.gender ILIKE $${idx} OR COALESCE(pc.name, '') ILIKE $${idx} OR COALESCE(p.pattern_code, '') ILIKE $${idx} OR COALESCE(p.fit_type, '') ILIKE $${idx})`
     }
 
     params.push(branchId)
@@ -608,9 +625,14 @@ router.get('/suggest', async (req, res) => {
           p.name AS product_name,
           p.brand_name AS brand,
           p.gender AS gender,
-          v.colour AS color
+          v.colour AS color,
+          pc.name AS category_name,
+          pc.slug AS category_slug,
+          p.pattern_code AS pattern_code,
+          p.fit_type AS fit_type
         FROM products p
         JOIN product_variants v ON v.product_id = p.id
+        LEFT JOIN product_categories pc ON pc.id = p.category_id
         LEFT JOIN LATERAL (
           SELECT BOOL_OR(is_active) AS is_active
           FROM branch_variant_stock bvs
@@ -758,13 +780,13 @@ router.get('/search', async (req, res) => {
       for (const t of tokens) {
         params.push(`%${t}%`)
         const idx = params.length
-        parts.push(`(p.name ILIKE $${idx} OR p.brand_name ILIKE $${idx} OR v.colour ILIKE $${idx} OR p.gender ILIKE $${idx})`)
+        parts.push(`(p.name ILIKE $${idx} OR p.brand_name ILIKE $${idx} OR v.colour ILIKE $${idx} OR p.gender ILIKE $${idx} OR COALESCE(pc.name, '') ILIKE $${idx} OR COALESCE(p.pattern_code, '') ILIKE $${idx} OR COALESCE(p.fit_type, '') ILIKE $${idx})`)
       }
-      where += ` AND (${parts.join(' OR ')})`
+      where += ` AND (${parts.join(' AND ')})`
     } else {
       params.push(`%${String(queryRaw).trim()}%`)
       const idx = params.length
-      where += ` AND (p.name ILIKE $${idx} OR p.brand_name ILIKE $${idx} OR v.colour ILIKE $${idx} OR p.gender ILIKE $${idx})`
+      where += ` AND (p.name ILIKE $${idx} OR p.brand_name ILIKE $${idx} OR v.colour ILIKE $${idx} OR p.gender ILIKE $${idx} OR COALESCE(pc.name, '') ILIKE $${idx} OR COALESCE(p.pattern_code, '') ILIKE $${idx} OR COALESCE(p.fit_type, '') ILIKE $${idx})`
     }
 
     if (priceMin != null) {
