@@ -319,15 +319,17 @@ const buildProductSelectSql = ({ where, branchIdx, cloudIdx }) => `
     v.size AS size,
     v.fit AS fit,
     v.mrp::numeric AS original_price_b2c,
+    ABS(COALESCE(v.b2c_discount_pct, 0))::numeric AS b2c_discount_pct,
     CASE
-      WHEN v.b2c_discount_pct IS NOT NULL AND v.b2c_discount_pct > 0
-        THEN ROUND(v.mrp::numeric * (100 - v.b2c_discount_pct)::numeric / 100, 2)
+      WHEN ABS(COALESCE(v.b2c_discount_pct, 0)) > 0
+        THEN ROUND(v.mrp::numeric * (100 - LEAST(ABS(v.b2c_discount_pct), 100))::numeric / 100, 2)
       ELSE NULL
     END AS final_price_b2c,
     v.mrp::numeric AS original_price_b2b,
+    ABS(COALESCE(v.b2b_discount_pct, 0))::numeric AS b2b_discount_pct,
     CASE
-      WHEN v.b2b_discount_pct IS NOT NULL AND v.b2b_discount_pct > 0
-        THEN ROUND(v.mrp::numeric * (100 - v.b2b_discount_pct)::numeric / 100, 2)
+      WHEN ABS(COALESCE(v.b2b_discount_pct, 0)) > 0
+        THEN ROUND(v.mrp::numeric * (100 - LEAST(ABS(v.b2b_discount_pct), 100))::numeric / 100, 2)
       ELSE NULL
     END AS final_price_b2b,
     v.mrp::numeric AS mrp,
@@ -409,8 +411,8 @@ const offerPriceSql = () => `
   COALESCE(
     NULLIF(
       CASE
-        WHEN v.b2c_discount_pct IS NOT NULL AND v.b2c_discount_pct > 0
-          THEN ROUND(v.mrp::numeric * (100 - v.b2c_discount_pct)::numeric / 100, 2)
+        WHEN ABS(COALESCE(v.b2c_discount_pct, 0)) > 0
+          THEN ROUND(v.mrp::numeric * (100 - LEAST(ABS(v.b2c_discount_pct), 100))::numeric / 100, 2)
         ELSE NULL
       END, 0
     ),

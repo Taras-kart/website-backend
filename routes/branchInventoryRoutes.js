@@ -187,8 +187,8 @@ function rowToPreparedRecord(raw) {
   const RSalePrice = toNumOrNull(row.rsaleprice);
   const CostPrice = toNumOrNull(row.costprice) ?? 0;
   const PurchaseQty = toIntOrZero(row.purchaseqty);
-  const B2CDiscount = toNumOrNull(row.b2cdiscount) ?? 0;
-  const B2BDiscount = toNumOrNull(row.b2bdiscount) ?? 0;
+  const B2CDiscount = Math.min(100, Math.abs(toNumOrNull(row.b2cdiscount) ?? 0));
+  const B2BDiscount = Math.min(100, Math.abs(toNumOrNull(row.b2bdiscount) ?? 0));
   let EANCode = row.eancode;
   if (EANCode != null && EANCode !== '') EANCode = cleanText(EANCode);
 
