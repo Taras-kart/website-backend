@@ -648,6 +648,21 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
     });
   }
 });
+router.post('/:branchId/images/lookup', requireBranchAuth, async (req, res) => {
+  const branchId = Number(req.params.branchId);
+  const isSuperAdmin = String(req.user?.role || req.user?.role_enum || '').toUpperCase() === 'SUPER_ADMIN';
+  if (!Number.isSafeInteger(branchId) || branchId < 1 || (!isSuperAdmin && branchId !== Number(req.user?.branch_id))) return res.status(403).json({ message: 'Forbidden' });
+  const input = req.body?.eans;
+  if (!Array.isArray(input) || input.length > 1000 || input.some(value => typeof value !== 'string' || value.length > 200)) return res.status(400).json({ message: 'Supply up to 1000 barcode strings' });
+  const eans = [...new Set(input.map(value => value.trim()).filter(Boolean))];
+  if (!eans.length) return res.json({ found: [] });
+  try {
+    const { rows } = await pool.query('SELECT DISTINCT ean_code FROM barcodes WHERE ean_code = ANY($1::text[])', [eans]);
+    return res.json({ found: rows.map(row => row.ean_code) });
+  } catch (error) {
+    return res.status(500).json({ message: 'Unable to look up image barcodes' });
+  }
+});
 router.post('/:branchId/images/confirm', requireBranchAuth, async (req, res) => {
   const branchId = parseInt(req.params.branchId, 10);
   const isSuperAdmin = String(req.user?.role || req.user?.role_enum || '').toUpperCase() === 'SUPER_ADMIN';
