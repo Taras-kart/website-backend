@@ -125,8 +125,8 @@ function requireBranchAuth(req, res, next) {
   }
 }
 function extractEANFromName(name) {
-  const m = String(name).match(/(\d{12,14})/);
-  return m ? m[1] : null;
+  const base = String(name ?? '').trim().split(/[\\/]/).pop().replace(/\.(?:jpe?g|png|webp|gif|avif|bmp)$/i, '').trim();
+  return base || null;
 }
 function isSummaryOrBlankRow(raw, ProductName, BrandName, SIZE, COLOUR, row) {
   const summary = cleanText(raw && (raw['Stock Summary'] || raw['stock summary']) || '');
@@ -689,7 +689,8 @@ router.post('/:branchId/images/confirm', requireBranchAuth, async (req, res) => 
         continue;
       }
       const rawEan = cleanText(img.ean || img.ean_code || img.filename || img.name || '');
-      const ean = extractEANFromName(rawEan);
+      const explicitEan = cleanText(img.ean || img.ean_code || '');
+      const ean = explicitEan || extractEANFromName(rawEan);
       const imageScope = cleanText(img.scope || img.image_scope || img.mode || bodyScope).toLowerCase();
       const requestedProductId = parseInt(img.product_id, 10);
       const requestedColour = cleanText(img.colour || img.color || '');
@@ -742,6 +743,11 @@ router.post('/:branchId/images/confirm', requireBranchAuth, async (req, res) => 
         continue;
       }
       if (!ean) {
+        skipped += 1;
+        continue;
+      }
+      const barcode = await client.query('SELECT 1 FROM barcodes WHERE ean_code = $1 LIMIT 1', [ean]);
+      if (!barcode.rows.length) {
         skipped += 1;
         continue;
       }
