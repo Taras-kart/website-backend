@@ -41,15 +41,14 @@ async function hydrate(ids, db = pool, branch = branchId()) {
   ${joins}
   LEFT JOIN LATERAL (SELECT (array_agg(ean_code ORDER BY id))[1] ean_code,array_agg(ean_code ORDER BY id) ean_codes FROM barcodes WHERE variant_id=v.id) bc ON TRUE
   LEFT JOIN LATERAL (
-    SELECT jsonb_agg(url ORDER BY priority,url) FILTER (WHERE priority<9) images,jsonb_agg(url ORDER BY priority,url) image_candidates FROM (
-      SELECT url,MIN(priority) priority FROM (
-        SELECT BTRIM(i.image_url) url,CASE WHEN lower(trim(COALESCE(i.fit,'')))=lower(trim(COALESCE(v.fit,''))) THEN 0 ELSE 1 END priority FROM product_colour_images i WHERE ${sharedMatch} AND ${validImage('i.image_url')}
-        UNION ALL SELECT BTRIM(v.image_url),2 WHERE ${validImage('v.image_url')}
-        UNION ALL SELECT BTRIM(ii.image_url),CASE WHEN lower(COALESCE(ii.image_type,'front'))='front' THEN 3 WHEN lower(ii.image_type)='back' THEN 5 ELSE 6 END FROM product_variants iv JOIN barcodes ib ON ib.variant_id=iv.id JOIN product_images ii ON ii.ean_code=ib.ean_code WHERE ${variantMatch} AND ${validImage('ii.image_url')}
-        UNION ALL SELECT BTRIM(iv.image_url),4 FROM product_variants iv WHERE ${variantMatch} AND ${validImage('iv.image_url')}
-        UNION ALL SELECT 'https://res.cloudinary.com/'||$3||'/image/upload/f_auto,q_auto/products/'||ib.ean_code,9 FROM barcodes ib JOIN product_variants iv ON iv.id=ib.variant_id WHERE ${variantMatch} AND NULLIF(BTRIM(ib.ean_code),'') IS NOT NULL
-      ) candidates GROUP BY url
-    ) deduplicated
+    WITH image_options AS (
+      SELECT BTRIM(i.image_url) url,CASE WHEN lower(trim(COALESCE(i.fit,'')))=lower(trim(COALESCE(v.fit,''))) THEN 0 ELSE 1 END priority,'front' view_type FROM product_colour_images i WHERE ${sharedMatch} AND ${validImage('i.image_url')}
+      UNION ALL SELECT BTRIM(v.image_url),2,'front' WHERE ${validImage('v.image_url')}
+      UNION ALL SELECT BTRIM(ii.image_url),CASE WHEN lower(COALESCE(ii.image_type,'front'))='front' THEN 3 WHEN lower(ii.image_type)='back' THEN 5 ELSE 6 END,COALESCE(NULLIF(lower(trim(ii.image_type)),''),'front') FROM product_variants iv JOIN barcodes ib ON ib.variant_id=iv.id JOIN product_images ii ON ii.ean_code=ib.ean_code WHERE ${variantMatch} AND ${validImage('ii.image_url')}
+      UNION ALL SELECT BTRIM(iv.image_url),4,'front' FROM product_variants iv WHERE ${variantMatch} AND ${validImage('iv.image_url')}
+      UNION ALL SELECT 'https://res.cloudinary.com/'||$3||'/image/upload/f_auto,q_auto/products/'||ib.ean_code,9,'front' FROM barcodes ib JOIN product_variants iv ON iv.id=ib.variant_id WHERE ${variantMatch} AND NULLIF(BTRIM(ib.ean_code),'') IS NOT NULL
+    ),deduplicated AS (SELECT url,MIN(priority) priority FROM image_options GROUP BY url),views AS (SELECT DISTINCT ON(view_type) url,priority,view_type FROM image_options WHERE priority<9 ORDER BY view_type,priority,url)
+    SELECT (SELECT jsonb_agg(url ORDER BY priority,url) FROM (SELECT url,MIN(priority) priority FROM views GROUP BY url) gallery) images,(SELECT jsonb_agg(url ORDER BY priority,url) FROM deduplicated) image_candidates
   ) imgs ON TRUE
   WHERE v.id=ANY($2::int[])`,[branch,ids,cloud])
   return result.rows

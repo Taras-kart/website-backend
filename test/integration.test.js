@@ -203,3 +203,19 @@ test('brand category images come from descendant products and stay scoped to the
  const fashion=await request(app).get('/api/products/facets?brand=Fashion');assert.equal(fashion.status,200);assert(fashion.body.categories.every(c=>!c.images.includes('https://example.test/generic-fit.jpg')))
  const light=await request(app).get('/api/products/facets?images=false');assert.equal(light.status,200);assert(light.body.categories.every(c=>c.images.length===0))
 })
+
+test('gallery keeps one photo per view across alternate barcodes while retaining fallback candidates',async()=>{
+ const source=(await q('SELECT product_id FROM product_variants WHERE id=$1',[variant1])).rows[0].product_id
+ await q("INSERT INTO product_images(ean_code,image_url,image_type) VALUES('SECOND-BARCODE','https://example.test/second-back.jpg','back'),('SECOND-BARCODE','https://example.test/side.jpg','side')")
+ const {hydrate}=require('../utils/catalogue'),item=(await hydrate([variant1]))[0]
+ assert.equal(item.images.length,3);assert.equal(item.images[0],'https://example.test/generic-fit.jpg');assert(item.images.includes('https://example.test/side.jpg'));assert.equal(item.images.filter(url=>url.includes('back')).length,1)
+ assert(item.image_candidates.includes('https://example.test/alternate.jpg'));assert(item.image_candidates.includes('https://example.test/second-back.jpg'))
+ assert.equal((await q('SELECT id FROM products WHERE id=$1',[source])).rows.length,1)
+})
+test('customer lists require super admin authorization and return arrays',async()=>{
+ for(const endpoint of ['/api/b2b-customers','/api/b2c-customers']){
+  assert.equal((await request(app).get(endpoint)).status,401)
+  assert.equal((await request(app).get(endpoint).set(auth(admin))).status,403)
+  const response=await request(app).get(endpoint).set(auth(superadmin));assert.equal(response.status,200);assert(Array.isArray(response.body))
+ }
+})

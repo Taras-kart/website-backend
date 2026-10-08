@@ -1,6 +1,13 @@
-ATTACH / TARA UPDATED SOURCE — 8 OCTOBER 2026 — UI AND IMAGE REVISION
+ATTACH / TARA UPDATED SOURCE — 8 OCTOBER 2026 — PORTAL REDESIGN AND GALLERY REVISION
 
-THIS REVISION
+LATEST PORTAL REVISION
+Admin uses tadm- class prefixes and a teal accent; superadmin uses tsup- prefixes and a purple accent. Page classes are also namespaced. Both portals have a light fixed header, desktop sidebar, mobile menu drawer, light content surfaces and font weights no greater than 700. Page content starts directly beneath the shared header with a small consistent gutter. Import panels use a desktop two-column layout and stack on mobile.
+
+Customers now uses authenticated API requests, validates list responses and provides retail/wholesale tabs, search, pagination, add-wholesale-customer and retry states. API errors no longer crash the page. Customer administration remains restricted to super admins. Order Issues and B2B Orders use the common branch context, removing the duplicate warehouse selector. Wholesale stock is explicitly labelled as shared inventory because the existing B2B stock table is global.
+
+Product galleries choose one image per named view across same-colour/fit size records and alternate barcodes. Front-image alternatives remain available for fallback without becoming repeated thumbnails. Broken thumbnails are removed instead of repeating the main image. Back/side/detail views remain visible when supplied with those image types. This fixes repeated front-image thumbnails from size-specific records; it does not perform visual similarity detection for incorrectly labelled photographs.
+
+EARLIER CATALOGUE REVISION INCLUDED
 The collection heading and sort control share a compact desktop row. Customer-facing style totals are removed. Filters now use independent checkboxes with OR within each selected group and AND across groups; category selections include descendants. Mobile uses a scrolling drawer with close, reset, keyboard support and Show products controls. Price changes apply after validation.
 
 Brand category/subcategory cards now render images. Category photos are provided by the backend from matching products, including descendants, rather than searching only the first 36 storefront products. Brand-specific categories use products from that brand. Image candidates include shared colour/fit photos, generic-fit photos, variant uploads and images attached to every barcode for the same colour/fit across sizes. Existing Cloudinary EAN paths remain supported. A missing image advances to the next candidate before a placeholder is used; a sibling image never changes the selected variant, barcode or stock identity. Filter-only and brand-directory requests skip image hydration.
@@ -80,8 +87,9 @@ Main retail listings request 24 styles per page, capped at 48. Product detail fe
 
 VERIFICATION
 Three CI production builds passed: website, admin, superadmin.
-20 backend integration tests passed, 0 failed, against an isolated PostgreSQL-compatible PGlite fixture.
+22 backend integration tests passed, 0 failed, against an isolated PostgreSQL-compatible PGlite fixture.
 Coverage includes migration repeatability, authorization, branch isolation, manual entry, barcode conflicts, product grouping/colours, Fashion masking, pagination, POS atomicity/idempotency, checkout identity/totals, cancellation/coin restoration, stale stock protection, account revocation, CSV/XLSX import, EAN leading zeroes, galleries, categories, sale status, mocked payment verification, legacy split product IDs and wholesale stock approval.
+Portal layout verification covered 54 route/viewport combinations at 1440px and 390px, with targeted rechecks after correcting the Order Issues tab overflow. Checks cover page crashes, horizontal page overflow, dark panel backgrounds and font weights above 700. Customer list/search/create and simulated API failure/retry behavior passed against isolated fixtures.
 Seven browser flows passed: brand/category/subcategory filters; compact heading and mobile checkbox filters; loaded product images and colour/size selection; women category images; branch-admin navigation; superadmin branch switching; wholesale basket and checkout submission. Desktop 1440px and mobile 390px layouts, product entry, login and overflow were checked. The actual delivered Excel workbook was visually inspected and imported in a backend test.
 
 LIMITS
