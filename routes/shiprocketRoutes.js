@@ -136,6 +136,9 @@ router.head(['/shiprocket/webhook', '/logistics/webhook'], (req, res) => {
 
 router.post(['/shiprocket/webhook', '/logistics/webhook'], async (req, res) => {
   try {
+    const configured=process.env.SHIPROCKET_WEBHOOK_TOKEN;
+    const provided=String(req.headers['x-api-key']||req.headers['x-webhook-token']||'');
+    if(!configured||provided!==configured)return res.status(401).json({message:'Invalid webhook token'});
     const payload = req.body || {};
 
     // Real Shiprocket payload uses awb, current_status/shipment_status,

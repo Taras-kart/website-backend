@@ -19,18 +19,7 @@ const slugify = value => clean(value)
   .replace(/[^a-z0-9]+/g, '-')
   .replace(/^-+|-+$/g, '')
 
-function requireAdminAuth(req, res, next) {
-  const header = req.headers.authorization || ''
-  const token = header.startsWith('Bearer ') ? header.slice(7) : ''
-  if (!token) return res.status(401).json({ message: 'Unauthorized' })
-
-  try {
-    req.user = jwt.verify(token, process.env.JWT_SECRET || 'dev_secret')
-    return next()
-  } catch {
-    return res.status(401).json({ message: 'Unauthorized' })
-  }
-}
+const requireAdminAuth = require('../middleware/auth').requireAuth
 
 async function uniqueSlug(db, gender, name, excludedId = null) {
   const base = slugify(`${gender}-${name}`) || `category-${Date.now()}`

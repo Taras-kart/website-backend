@@ -1,11 +1,12 @@
 const express = require('express');
 const pool = require('../db');
+const bcrypt = require('bcryptjs');
 const router = express.Router();
 
 router.post('/', async (req, res) => {
   // 1. Extract 'city' from the incoming request body
   const { name, email, mobile, password, city } = req.body;
-  if (!name || !email || !mobile || !password)
+  if (!name || !email || !mobile || String(password||'').length<8)
     return res.status(400).json({ message: 'All fields except city are required' });
 
   try {
@@ -17,7 +18,7 @@ router.post('/', async (req, res) => {
       `INSERT INTO userstaras (name, email, mobile, password, type, city)
        VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING id, name, email, mobile, type, city`,
-      [name, email, mobile, password, 'B2B', city || null]
+      [name, String(email).trim().toLowerCase(), mobile, await bcrypt.hash(password,12), 'B2B', city || null]
     );
 
     res.status(201).json({ message: 'B2B customer added', user: result.rows[0] });

@@ -1,5 +1,6 @@
 const express = require('express');
 const pool = require('../db');
+const {displayBrand}=require('../utils/brands');
 const router = express.Router();
 const toInt = value => {
   const n = Number(value);
@@ -81,7 +82,7 @@ router.get('/:userId', async (req, res) => {
           AND COALESCE(v2.fit,'')=COALESCE(v.fit,'') AND v2.pack_size=v.pack_size
         ORDER BY b2.id ASC LIMIT 1
       ) bc_any ON TRUE
-      LEFT JOIN product_images pi ON pi.ean_code=COALESCE(bc_self.ean_code,bc_any.ean_code)
+      LEFT JOIN product_images pi ON pi.ean_code=COALESCE(bc_self.ean_code,bc_any.ean_code) AND pi.image_type='front'
       WHERE c.user_id=$1
     ) SELECT user_id, variant_id AS id, variant_id, product_id, product_name, brand, gender, color, size, fit, pack_size,
       selected_size, selected_color, quantity, mrp AS original_price_b2c,
@@ -94,7 +95,7 @@ router.get('/:userId', async (req, res) => {
     const {
       rows
     } = await pool.query(sql, [uid, cloud]);
-    return res.json(rows);
+    return res.json(rows.map(row=>({...row,brand:displayBrand(row.brand||row.brand_name),brand_name:displayBrand(row.brand||row.brand_name)})));
   } catch (err) {
     return res.status(500).json({
       message: 'Error fetching cart',

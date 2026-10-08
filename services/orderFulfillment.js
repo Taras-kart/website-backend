@@ -201,13 +201,19 @@ async function restoreStock(pool, decremented) {
 }
 
 async function fulfillOrderWithShiprocket(sale, pool) {
+  if(!['PAID','COD'].includes(String(sale.payment_status).toUpperCase())||sale.status==='CANCELLED')throw new Error('Only confirmed orders can be fulfilled')
+  const lock=await pool.connect()
+  await lock.query('SELECT pg_advisory_lock(hashtext($1))',[`fulfill:${sale.id}`])
+  try {
+  const existing=(await pool.query('SELECT * FROM shipments WHERE sale_id=$1',[sale.id])).rows
+  if(existing.length)return existing
   const sr = new Shiprocket({ pool })
   await sr.init()
 
   let planned = null
   let decremented = []
   try {
-    planned = await planShipmentsAndDecrementStock(sale, pool)
+    planned = sale.stock_committed ? {groups:[{branch_id:Number(sale.branch_id),items:sale.items.map(normalizeShipItem)}],decremented:[]} : await planShipmentsAndDecrementStock(sale, pool)
     decremented = planned.decremented || []
 
     const groups = planned.groups || []
@@ -301,6 +307,9 @@ async function fulfillOrderWithShiprocket(sale, pool) {
       await restoreStock(pool, decremented)
     } catch {}
     throw e
+  }
+  } finally {
+    await lock.query('SELECT pg_advisory_unlock(hashtext($1))',[`fulfill:${sale.id}`]);lock.release()
   }
 }
 

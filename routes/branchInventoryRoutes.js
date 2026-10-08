@@ -7,13 +7,15 @@ const {
   put
 } = require('@vercel/blob');
 const router = express.Router();
+const {saveVariant,validateVariant}=require('../services/catalogueWrite');
+const crypto=require('crypto');
 const {
   parsePackImport
 } = require('../utils/packImport');
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: 200 * 1024 * 1024
+    fileSize: 10 * 1024 * 1024
   }
 });
 const IMPORT_ROW_STATUS_CREATED = 'CREATED';
@@ -32,7 +34,7 @@ const HEADER_ALIASES = {
   markcode: ['mark code', 'mark', 'marking', 'markcode'],
   size: ['size', 'size '],
   colour: ['colour', 'color', 'colour ', 'color '],
-  pattern: ['pattern code', 'style', 'style code', 'pattern', 'design pattern'],
+  pattern: ['design code', 'design_code', 'pattern code', 'style', 'style code', 'pattern', 'design pattern'],
   fitt: ['fit', 'fit type', 'fitt'],
   b2bdiscount: ['b2bdiscount', 'b2b discount', 'discount_b2b', 'b2b disc', 'b2b_disc']
 };
@@ -108,22 +110,7 @@ async function loadImportCategory(db, categoryId, gender) {
     category
   };
 }
-function requireBranchAuth(req, res, next) {
-  const hdr = req.headers.authorization || '';
-  const token = hdr.startsWith('Bearer ') ? hdr.slice(7) : '';
-  if (!token) return res.status(401).json({
-    message: 'Unauthorized'
-  });
-  try {
-    const payload = jwt.verify(token, process.env.JWT_SECRET || 'dev_secret');
-    req.user = payload;
-    return next();
-  } catch {
-    return res.status(401).json({
-      message: 'Unauthorized'
-    });
-  }
-}
+const requireBranchAuth = require('../middleware/auth').requireAuth
 function extractEANFromName(name) {
   const base = String(name ?? '').trim().split(/[\\/]/).pop().replace(/\.(?:jpe?g|png|webp|gif|avif|bmp)$/i, '').trim();
   return base || null;
@@ -155,22 +142,8 @@ function shouldSkipBusinessRow(ProductName, BrandName, MRP, RSalePrice) {
   if (!bothZero) return false;
   return isDefaultText(ProductName) || isDefaultText(BrandName);
 }
-async function ensureImportRowsTable() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS import_rows (
-      id BIGSERIAL PRIMARY KEY,
-      import_job_id BIGINT NOT NULL REFERENCES import_jobs(id) ON DELETE CASCADE,
-      raw_row_json JSONB NOT NULL,
-      status_enum TEXT,
-      error_msg TEXT
-    )
-  `);
-  await pool.query(`ALTER TABLE import_rows ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`);
-  await pool.query(`ALTER TABLE import_rows ADD COLUMN IF NOT EXISTS processed_at TIMESTAMPTZ`);
-  await pool.query(`ALTER TABLE import_rows ADD COLUMN IF NOT EXISTS raw_row_json JSONB`);
-  await pool.query(`ALTER TABLE import_rows ADD COLUMN IF NOT EXISTS error_msg TEXT`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_import_rows_job_status_id ON import_rows(import_job_id, status_enum, id)`);
-}
+async function ensureImportRowsTable() { return true; }
+
 function rowToPreparedRecord(raw) {
   const row = normalizeRow(raw);
   const ProductName = cleanText(row.productname);
@@ -187,8 +160,8 @@ function rowToPreparedRecord(raw) {
   const PurchaseQty = pack.quantity ?? 0;
   const PackSize = pack.packSize ?? 1;
   const PackError = pack.error || null;
-  const B2CDiscount = Math.min(100, Math.abs(toNumOrNull(row.b2cdiscount) ?? 0));
-  const B2BDiscount = Math.min(100, Math.abs(toNumOrNull(row.b2bdiscount) ?? 0));
+  const B2CDiscount = toNumOrNull(row.b2cdiscount) ?? 0;
+  const B2BDiscount = toNumOrNull(row.b2bdiscount) ?? 0;
   let EANCode = row.eancode;
   if (EANCode != null && EANCode !== '') EANCode = cleanText(EANCode);
   return {
@@ -231,7 +204,7 @@ async function getAllowedImportRowStatuses() {
   const {
     rows
   } = await pool.query(sql);
-  return rows.map(r => r.enumlabel);
+  return rows.length ? rows.map(r => r.enumlabel) : ['CREATED','OK','ERROR'];
 }
 function resolveCreatedStatus(enumValues) {
   if (enumValues.includes('CREATED')) return 'CREATED';
@@ -378,9 +351,7 @@ router.post('/:branchId/import', requireBranchAuth, upload.single('file'), async
     message: 'Category is required'
   });
   const token = process.env.BLOB_READ_WRITE_TOKEN || process.env.VERCEL_BLOB_READ_WRITE_TOKEN || process.env.VERCEL_BLOB_RW_TOKEN;
-  if (!token) return res.status(500).json({
-    message: 'Upload store not configured'
-  });
+  
   const client = await pool.connect();
   try {
     await ensureImportRowsTable();
@@ -396,9 +367,8 @@ router.post('/:branchId/import', requireBranchAuth, upload.single('file'), async
         message: `import_row_status enum is missing CREATED. Available values: ${enumValues.join(', ')}`
       });
     }
-    const wb = XLSX.read(req.file.buffer, {
-      type: 'buffer'
-    });
+    if (!/\.(xlsx|xls|csv)$/i.test(req.file.originalname)) return res.status(400).json({message:'Upload an Excel or CSV file'});
+    const wb = XLSX.read(req.file.buffer, {type:'buffer',sheetRows:20002});
     const wsName = wb.SheetNames && wb.SheetNames[0];
     if (!wsName) return res.status(400).json({
       message: 'No worksheet in file'
@@ -411,19 +381,29 @@ router.post('/:branchId/import', requireBranchAuth, upload.single('file'), async
       const prepared = rowToPreparedRecord(raw);
       if (shouldQueueRow(prepared)) preparedRows.push(prepared);
     }
+    if (!preparedRows.length || preparedRows.length > 20000) return res.status(400).json({message:'Upload between 1 and 20,000 data rows'});
+    const seen = new Set();
+    for (let i=0;i<preparedRows.length;i++) {
+      const r=preparedRows[i];
+      try {
+        if(r.PackError) throw new Error(r.PackError);
+        validateVariant({name:r.ProductName,brand:r.BrandName,size:r.SIZE,colour:r.COLOUR,pattern:r.PATTERN,fit:r.FITT,ean:r.EANCode,gender,category_id:categoryId,mrp:r.MRP,sale_price:r.RSalePrice,cost_price:r.CostPrice,b2c_discount_pct:r.B2CDiscount,b2b_discount_pct:r.B2BDiscount,quantity:r.PurchaseQty,pack_size:r.PackSize});
+        if(r.EANCode&&seen.has(r.EANCode)) throw new Error('Repeated barcode in this file');
+        if(r.EANCode) seen.add(r.EANCode);
+      } catch(e) {return res.status(400).json({message:`Excel row ${i+2}: ${e.message}`});}
+    }
+    const hash=crypto.createHash('sha256').update(req.file.buffer).digest('hex');
+    const duplicate=await client.query('SELECT * FROM import_jobs WHERE branch_id=$1 AND category_id=$2 AND file_hash=$3',[branchId,categoryId,hash]);
+    if(duplicate.rows.length) return res.json({...duplicate.rows[0],reused:true});
     const ext = (req.file.originalname.split('.').pop() || 'xlsx').toLowerCase();
     const name = `${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
-    const stored = await put(name, req.file.buffer, {
-      access: 'public',
-      contentType: req.file.mimetype,
-      token
-    });
+    const stored = {url:''};
     await client.query('BEGIN');
     const {
       rows
-    } = await client.query(`INSERT INTO import_jobs (file_name, file_url, uploaded_by, status_enum, rows_total, rows_success, rows_error, branch_id, gender, category_id)
-       VALUES ($1, $2, $3, 'PENDING', $4, 0, 0, $5, $6, $7)
-       RETURNING id, file_name, file_url, uploaded_by, status_enum, rows_total, rows_success, rows_error, uploaded_at, completed_at, branch_id, gender, category_id`, [req.file.originalname || name, stored.url, req.user.id, preparedRows.length, branchId, gender, categoryId]);
+    } = await client.query(`INSERT INTO import_jobs (file_name, file_url, uploaded_by, status_enum, rows_total, rows_success, rows_error, branch_id, gender, category_id, file_hash)
+       VALUES ($1, $2, $3, 'PENDING', $4, 0, 0, $5, $6, $7, $8)
+       RETURNING id, file_name, file_url, uploaded_by, status_enum, rows_total, rows_success, rows_error, uploaded_at, completed_at, branch_id, gender, category_id`, [req.file.originalname || name, stored.url, req.user.id, preparedRows.length, branchId, gender, categoryId, hash]);
     const job = rows[0];
     if (preparedRows.length) {
       await insertImportRowsInBatches(client, job.id, preparedRows, createdStatus);
@@ -446,7 +426,7 @@ router.post('/:branchId/import', requireBranchAuth, upload.single('file'), async
 router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, res) => {
   const branchId = parseInt(req.params.branchId, 10);
   const jobId = parseInt(req.params.jobId, 10);
-  const limit = Math.max(1, Math.min(25, parseInt(req.query.limit || '25', 10)));
+  const limit = Math.max(1, Math.min(100, parseInt(req.query.limit || '100', 10)));
   const isSuperAdmin = String(req.user?.role || req.user?.role_enum || '').toUpperCase() === 'SUPER_ADMIN';
   if (!isSuperAdmin && (!branchId || branchId !== Number(req.user.branch_id))) return res.status(403).json({
     message: 'Forbidden'
@@ -495,6 +475,8 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
     const errMap = new Map();
     const errSamples = [];
     try {
+      const locked=await client.query('SELECT pg_try_advisory_lock(73498,$1) locked',[jobId]);
+      if (!locked.rows[0].locked) return res.status(409).json({message:'This import is already processing. Wait, then resume.'});
       const batch = await client.query(`SELECT id, raw_row_json
          FROM import_rows
          WHERE import_job_id = $1 AND status_enum = $2
@@ -538,41 +520,7 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
         }
         try {
           await client.query('BEGIN');
-          const pRes = await client.query(`INSERT INTO products (name, brand_name, pattern_code, fit_type, mark_code, gender, category_id)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)
-             ON CONFLICT (name, brand_name, pattern_code, gender)
-             DO UPDATE SET fit_type = EXCLUDED.fit_type,
-                           mark_code = EXCLUDED.mark_code,
-                           category_id = EXCLUDED.category_id,
-                           is_active = TRUE,
-                           deleted_at = NULL,
-                           updated_at = NOW()
-             RETURNING id`, [prepared.ProductName, prepared.BrandName, prepared.PATTERN, prepared.FITT, prepared.MarkCode, gender, categoryId]);
-          const productId = pRes.rows[0].id;
-          const vRes = await client.query(`INSERT INTO product_variants (product_id, size, colour, fit, is_active, mrp, sale_price, cost_price, b2c_discount_pct, b2b_discount_pct, pack_size)
-             VALUES ($1, $2, $3, $4, TRUE, $5, $6, $7, $8, $9, $10)
-             ON CONFLICT (product_id, size, colour, fit)
-             DO UPDATE SET is_active = TRUE,
-                           mrp = EXCLUDED.mrp,
-                           sale_price = EXCLUDED.sale_price,
-                           cost_price = EXCLUDED.cost_price,
-                           b2c_discount_pct = EXCLUDED.b2c_discount_pct,
-                           b2b_discount_pct = EXCLUDED.b2b_discount_pct
-             WHERE product_variants.pack_size = EXCLUDED.pack_size
-             RETURNING id`, [productId, prepared.SIZE, prepared.COLOUR, prepared.FITT, prepared.MRP, prepared.RSalePrice, prepared.CostPrice, prepared.B2CDiscount, prepared.B2BDiscount, prepared.PackSize]);
-          if (!vRes.rows.length) throw new Error('Existing variant has a different pack size. Review its stock units before changing pack size.');
-          const variantId = vRes.rows[0].id;
-          if (prepared.EANCode) {
-            await client.query(`INSERT INTO barcodes (variant_id, ean_code)
-               VALUES ($1, $2)
-               ON CONFLICT (ean_code)
-               DO UPDATE SET variant_id = EXCLUDED.variant_id`, [variantId, prepared.EANCode]);
-          }
-          await client.query(`INSERT INTO branch_variant_stock (branch_id, variant_id, on_hand, reserved, is_active)
-             VALUES ($1, $2, $3, 0, TRUE)
-             ON CONFLICT (branch_id, variant_id)
-             DO UPDATE SET on_hand = branch_variant_stock.on_hand + EXCLUDED.on_hand,
-                           is_active = TRUE`, [branchId, variantId, prepared.PurchaseQty]);
+          await saveVariant(client,{name:prepared.ProductName,brand:prepared.BrandName,size:prepared.SIZE,colour:prepared.COLOUR,pattern:prepared.PATTERN,fit:prepared.FITT,ean:prepared.EANCode,gender,category_id:categoryId,mrp:prepared.MRP,sale_price:prepared.RSalePrice,cost_price:prepared.CostPrice,b2c_discount_pct:prepared.B2CDiscount,b2b_discount_pct:prepared.B2BDiscount,quantity:prepared.PurchaseQty,pack_size:prepared.PackSize},branchId,req.user,{reference:`IMPORT:${jobId}:${batchRow.id}`});
           await client.query(`UPDATE import_rows
              SET status_enum = $2,
                  error_msg = NULL,
@@ -597,6 +545,7 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
         }
       }
     } finally {
+      await client.query('SELECT pg_advisory_unlock(73498,$1)',[jobId]);
       client.release();
     }
     const currentStatusRow = await pool.query(`SELECT
@@ -657,7 +606,7 @@ router.post('/:branchId/images/lookup', requireBranchAuth, async (req, res) => {
   const eans = [...new Set(input.map(value => value.trim()).filter(Boolean))];
   if (!eans.length) return res.json({ found: [] });
   try {
-    const { rows } = await pool.query('SELECT DISTINCT ean_code FROM barcodes WHERE ean_code = ANY($1::text[])', [eans]);
+    const { rows } = await pool.query('SELECT DISTINCT b.ean_code FROM barcodes b JOIN branch_variant_stock s ON s.variant_id=b.variant_id WHERE b.ean_code = ANY($1::text[]) AND s.branch_id=$2', [eans,branchId]);
     return res.json({ found: rows.map(row => row.ean_code) });
   } catch (error) {
     return res.status(500).json({ message: 'Unable to look up image barcodes' });
@@ -684,6 +633,7 @@ router.post('/:branchId/images/confirm', requireBranchAuth, async (req, res) => 
     await client.query('BEGIN');
     for (const img of images) {
       const url = cleanText(img.secure_url || img.image_url || img.url || '');
+      if(url && !/^https:\/\//i.test(url)) throw Object.assign(new Error('Image URL must use HTTPS'),{status:400});
       if (!url) {
         skipped += 1;
         continue;
@@ -691,6 +641,8 @@ router.post('/:branchId/images/confirm', requireBranchAuth, async (req, res) => 
       const rawEan = cleanText(img.ean || img.ean_code || img.filename || img.name || '');
       const explicitEan = cleanText(img.ean || img.ean_code || '');
       const ean = explicitEan || extractEANFromName(rawEan);
+      const imageType=cleanText(img.image_type||'front').toLowerCase();
+      if(!/^(front|back|side|detail[0-9]*)$/.test(imageType))throw Object.assign(new Error('Invalid image type'),{status:400});
       const imageScope = cleanText(img.scope || img.image_scope || img.mode || bodyScope).toLowerCase();
       const requestedProductId = parseInt(img.product_id, 10);
       const requestedColour = cleanText(img.colour || img.color || '');
@@ -716,6 +668,7 @@ router.post('/:branchId/images/confirm', requireBranchAuth, async (req, res) => 
           skipped += 1;
           continue;
         }
+        if(!isSuperAdmin && !(await client.query('SELECT 1 FROM product_variants v JOIN branch_variant_stock s ON s.variant_id=v.id WHERE v.product_id=$1 AND s.branch_id=$2 LIMIT 1',[productId,branchId])).rows.length) throw Object.assign(new Error('Product is not stocked in your branch'),{status:403});
         const publicId = cleanText(img.cloudinary_public_id || img.public_id || '') || null;
         await client.query(`INSERT INTO product_colour_images (product_id, colour, fit, image_url, cloudinary_public_id, created_at, updated_at)
            VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
@@ -735,7 +688,7 @@ router.post('/:branchId/images/confirm', requireBranchAuth, async (req, res) => 
            WHERE pv.product_id = $1
              AND LOWER(BTRIM(pv.colour)) = LOWER(BTRIM($2))
              AND LOWER(BTRIM(COALESCE(pv.fit, ''))) = LOWER(BTRIM($3))
-           ON CONFLICT (ean_code)
+           ON CONFLICT (ean_code,image_type)
            DO UPDATE SET image_url = EXCLUDED.image_url,
                          uploaded_at = NOW()`, [productId, colour, fit, url]);
         sharedUpdated += 1;
@@ -746,21 +699,16 @@ router.post('/:branchId/images/confirm', requireBranchAuth, async (req, res) => 
         skipped += 1;
         continue;
       }
-      const barcode = await client.query('SELECT 1 FROM barcodes WHERE ean_code = $1 LIMIT 1', [ean]);
+      const barcode = await client.query('SELECT 1 FROM barcodes b JOIN branch_variant_stock s ON s.variant_id=b.variant_id WHERE b.ean_code=$1 AND s.branch_id=$2 LIMIT 1',[ean,branchId]);
       if (!barcode.rows.length) {
         skipped += 1;
         continue;
       }
-      await client.query(`INSERT INTO product_images (ean_code, image_url, uploaded_at)
-         VALUES ($1, $2, NOW())
-         ON CONFLICT (ean_code)
-         DO UPDATE SET image_url = EXCLUDED.image_url,
-                       uploaded_at = NOW()`, [ean, url]);
-      await client.query(`UPDATE product_variants v
-         SET image_url = $2
-         FROM barcodes b
-         WHERE b.variant_id = v.id
-           AND b.ean_code = $1`, [ean, url]);
+      await client.query(`INSERT INTO product_images (ean_code, image_url, image_type,uploaded_at)
+         VALUES ($1, $2, $3, NOW())
+         ON CONFLICT (ean_code,image_type)
+         DO UPDATE SET image_url = EXCLUDED.image_url,uploaded_at=NOW()`,[ean,url,imageType]);
+      if(imageType==='front')await client.query(`UPDATE product_variants v SET image_url=$2 FROM barcodes b WHERE b.variant_id=v.id AND b.ean_code=$1`,[ean,url]);
       legacyUpdated += 1;
       totalUpdated += 1;
     }
@@ -826,7 +774,7 @@ router.get('/:branchId/stock', requireBranchAuth, async (req, res) => {
        LEFT JOIN LATERAL (
          SELECT ean_code FROM barcodes bc WHERE bc.variant_id = v.id ORDER BY id ASC LIMIT 1
        ) bc ON TRUE
-       LEFT JOIN product_images pi ON pi.ean_code = bc.ean_code
+       LEFT JOIN product_images pi ON pi.ean_code = bc.ean_code AND pi.image_type='front'
        WHERE ${where}
        ORDER BY p.brand_name, p.name, v.size, v.colour, v.fit`, params);
     res.json(rows);
@@ -887,9 +835,10 @@ router.post('/:branchId/discounts', requireBranchAuth, async (req, res) => {
   if (!isSuperAdmin && (!branchId || branchId !== Number(req.user.branch_id))) return res.status(403).json({
     message: 'Forbidden'
   });
+  if(!isSuperAdmin)return res.status(403).json({message:'Bulk prices affect shared variants. A super admin must apply them.'});
   const b2c = Number(req.body?.b2c_discount_pct);
   const b2b = Number(req.body?.b2b_discount_pct);
-  if (!Number.isFinite(b2c) || !Number.isFinite(b2b) || b2c < 0 || b2b < 0) {
+  if (!Number.isFinite(b2c) || !Number.isFinite(b2b) || b2c < 0 || b2b < 0 || b2c > 100 || b2b > 100) {
     return res.status(400).json({
       message: 'Invalid discount values'
     });

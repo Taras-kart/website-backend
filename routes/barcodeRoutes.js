@@ -17,7 +17,7 @@ router.get('/:ean', async (req, res) => {
          pv.colour,
          pv.fit,
          pv.mrp::numeric AS mrp,
-         pv.sale_price::numeric AS sale_price,
+         CASE WHEN COALESCE(pv.b2c_discount_pct,0)>0 THEN ROUND(pv.mrp*(100-pv.b2c_discount_pct)/100,2) ELSE COALESCE(NULLIF(pv.sale_price,0),pv.mrp) END AS sale_price,
          pv.cost_price::numeric AS cost_price,
          p.id AS product_id,
          p.name AS product_name,
@@ -44,7 +44,7 @@ router.get('/:ean', async (req, res) => {
          ON pci.product_id = p.id
         AND LOWER(BTRIM(pci.colour)) = LOWER(BTRIM(pv.colour))
         AND LOWER(BTRIM(COALESCE(pci.fit, ''))) = LOWER(BTRIM(COALESCE(pv.fit, '')))
-       LEFT JOIN public.product_images pi ON pi.ean_code = b.ean_code
+       LEFT JOIN public.product_images pi ON pi.ean_code = b.ean_code AND pi.image_type='front'
        WHERE b.ean_code = $1
        LIMIT 1`,
       [ean, CLOUD_NAME]

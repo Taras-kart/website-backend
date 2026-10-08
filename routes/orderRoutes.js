@@ -40,7 +40,7 @@ async function resolveVariantImage(db, variantId) {
        ORDER BY b.id ASC
        LIMIT 1
      ) bc ON TRUE
-     LEFT JOIN product_images pi ON pi.ean_code = bc.ean_code
+     LEFT JOIN product_images pi ON pi.ean_code = bc.ean_code AND pi.image_type='front'
      WHERE v.id = $1
      LIMIT 1`, [variantId, cloud]);
   return q.rows[0] || null;
@@ -231,7 +231,7 @@ router.post('/cancel', async (req, res) => {
   let salePaymentStatus = null;
   try {
     await client.query('BEGIN');
-    const orderQ = await client.query(`SELECT id, status, payment_status
+    const orderQ = await client.query(`SELECT id, status, payment_status, stock_committed, branch_id, customer_email
        FROM sales
        WHERE id = $1::uuid
        FOR UPDATE`, [sale_id]);
@@ -254,7 +254,7 @@ router.post('/cancel', async (req, res) => {
         message: 'Order already cancelled'
       });
     }
-    if (currentStatus === 'DELIVERED' || currentStatus === 'RTO') {
+    if (!['PLACED','PENDING','CONFIRMED','PROCESSING'].includes(currentStatus)) {
       await client.query('ROLLBACK');
       client.release();
       return res.status(400).json({
@@ -267,6 +267,21 @@ router.post('/cancel', async (req, res) => {
        WHERE sale_id = $1
          AND shiprocket_order_id IS NOT NULL`, [sale_id]);
     shiprocketOrderIds = shipQ.rows.map(r => r.shiprocket_order_id).filter(Boolean);
+    if(shiprocketOrderIds.length)throw Object.assign(new Error('Shipment already created. Contact support to cancel.'),{status:409});
+    if(sale.stock_committed){
+      const items=(await client.query('SELECT variant_id,SUM(qty)::int AS qty FROM sale_items WHERE sale_id=$1 GROUP BY variant_id ORDER BY variant_id',[sale_id])).rows;
+      for(const item of items){
+        const stock=(await client.query('UPDATE branch_variant_stock SET on_hand=on_hand+$3 WHERE branch_id=$1 AND variant_id=$2 RETURNING on_hand',[sale.branch_id,item.variant_id,item.qty])).rows[0];
+        if(stock)await client.query("INSERT INTO tara_stock_movements(branch_id,variant_id,delta,balance,reason,reference) VALUES($1,$2,$3,$4,'ORDER_CANCELLED',$5)",[sale.branch_id,item.variant_id,item.qty,stock.on_hand,sale_id]);
+      }
+    }
+    const customer=(await client.query('SELECT id FROM userstaras WHERE lower(email)=lower($1)',[sale.customer_email])).rows[0];
+    if(customer){
+      await client.query('SELECT user_id FROM coin_wallets WHERE user_id=$1 FOR UPDATE',[customer.id]);
+      const tx=(await client.query("SELECT amount,note FROM coin_transactions WHERE user_id=$1 AND sale_id=$2 AND type='REDEEMED' LIMIT 1",[customer.id,sale_id])).rows[0];
+      const released=(await client.query("SELECT 1 FROM coin_transactions WHERE user_id=$1 AND sale_id=$2 AND type='RELEASED'",[customer.id,sale_id])).rows.length;
+      if(tx&&!released){const amount=Math.abs(Number(tx.amount)),signup=Number(tx.note?.match(/(\d+) signup/)?.[1]||0);await client.query('UPDATE coin_wallets SET balance=balance+$2,signup_coins_remaining=signup_coins_remaining+$3,updated_at=now() WHERE user_id=$1',[customer.id,amount,signup]);await client.query("INSERT INTO coin_transactions(user_id,amount,type,sale_id,note) VALUES($1,$2,'RELEASED',$3,'Order cancelled')",[customer.id,amount,sale_id]);}
+    }
     await client.query(`UPDATE sales SET status = 'CANCELLED' WHERE id = $1::uuid`, [sale_id]);
     await client.query(`UPDATE shipments SET status = 'CANCELLED' WHERE sale_id = $1`, [sale_id]);
     await client.query(`INSERT INTO order_cancellations (sale_id, payment_type, reason, cancellation_source, created_at)
@@ -274,16 +289,16 @@ router.post('/cancel', async (req, res) => {
        ON CONFLICT DO NOTHING`, [sale_id, payment_type || salePaymentStatus, reason || null, cancellation_source || null]);
     await client.query('COMMIT');
     client.release();
-  } catch {
+  } catch (error) {
     try {
       await client.query('ROLLBACK');
     } catch {}
     try {
       client.release();
     } catch {}
-    return res.status(500).json({
+    return res.status(error.status||500).json({
       ok: false,
-      message: 'Failed to cancel order'
+      message: error.status?error.message:'Failed to cancel order'
     });
   }
   if (shiprocketOrderIds.length) {

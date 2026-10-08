@@ -52,7 +52,7 @@ async function resolveVariantImage(db, variantId) {
        ORDER BY b.id ASC
        LIMIT 1
      ) bc ON TRUE
-     LEFT JOIN product_images pi ON pi.ean_code = bc.ean_code
+     LEFT JOIN product_images pi ON pi.ean_code = bc.ean_code AND pi.image_type='front'
      WHERE v.id = $1
      LIMIT 1`,
     [variantId, cloud]
@@ -371,87 +371,6 @@ router.post('/web/place', async (req, res) => {
   })
 })
 
-router.post('/web/b2b-place', async (req, res) => {
-  const { customer_email, customer_name, shipping_address, items, totals, payment_method } = req.body || {}
-
-  if (!customer_email) {
-    return res.status(400).json({ message: 'customer_email required' })
-  }
-
-  if (!Array.isArray(items) || items.length === 0) {
-    return res.status(400).json({ message: 'items required' })
-  }
-
-  const client = await pool.connect()
-  try {
-    await client.query('BEGIN')
-
-    const saleQ = await client.query(
-      `INSERT INTO sales
-       (source, customer_email, customer_name, shipping_address, status, payment_status, totals, total, payment_method, is_b2b, created_at)
-       VALUES
-       ('B2B', $1, $2, $3::jsonb, 'B2B_PENDING', 'PENDING', $4::jsonb, $5, $6, true, now())
-       RETURNING id`,
-      [
-        customer_email || 'b2b@wholesale.com',
-        customer_name || 'B2B User',
-        JSON.stringify(shipping_address || {}),
-        JSON.stringify(totals || {}),
-        totals?.payable || 0,
-        payment_method || 'B2B_BULK'
-      ]
-    )
-
-    const saleId = saleQ.rows[0].id
-
-    for (const it of items) {
-      if (!it.variant_id) {
-        await client.query('ROLLBACK')
-        return res.status(400).json({ message: 'variant_id is required for all items' })
-      }
-
-      const resolved = await resolveVariantImage(client, Number(it.variant_id))
-      if (!resolved) {
-        await client.query('ROLLBACK')
-        return res.status(400).json({ message: `Invalid variant ${it.variant_id}` })
-      }
-
-      const providedImage = String(it.image_url || '').trim()
-      const itemImage = resolved.shared_image_url || providedImage || resolved.fallback_image_url || ''
-      const itemSize = it.size || resolved.size || ''
-      const itemColour = it.colour || resolved.colour || ''
-
-      await client.query(
-        `INSERT INTO sale_items
-         (id, sale_id, variant_id, qty, price, mrp, size, colour, image_url, ean_code)
-         VALUES
-         ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10)`,
-        [
-          uuid(),
-          saleId,
-          it.variant_id,
-          Number(it.qty) || 1,
-          Number(it.price) || 0,
-          Number(it.mrp) || 0,
-          itemSize,
-          itemColour,
-          itemImage,
-          resolved.ean_code || null
-        ]
-      )
-    }
-
-    await client.query('COMMIT')
-    return res.json({ id: saleId, status: 'B2B_PENDING', message: 'Bulk order submitted successfully' })
-  } catch (e) {
-    await client.query('ROLLBACK')
-    console.error('B2B Order Error:', e)
-    return res.status(500).json({ message: 'Failed to place B2B order' })
-  } finally {
-    client.release()
-  }
-})
-
 router.post('/web/set-payment-status', async (req, res) => {
   const client = await pool.connect()
 
@@ -562,6 +481,7 @@ router.get('/web/by-user', async (req, res) => {
     const salesQ = await pool.query(
       `SELECT
          s.id,
+         s.source,
          s.status,
          s.payment_status,
          s.payment_method,
@@ -610,8 +530,8 @@ router.get('/web/by-user', async (req, res) => {
              ELSE NULL
            END
          ) AS image_url,
-         p.name AS product_name,
-         p.brand_name
+         COALESCE(si.product_name_snapshot,p.name) AS product_name,
+         COALESCE(si.brand_name_snapshot,p.brand_name) AS brand_name
        FROM sale_items si
        LEFT JOIN product_variants v ON v.id = si.variant_id
        LEFT JOIN products p ON p.id = v.product_id
@@ -626,7 +546,7 @@ router.get('/web/by-user', async (req, res) => {
          ORDER BY b.id ASC
          LIMIT 1
        ) bc ON TRUE
-       LEFT JOIN product_images pi ON pi.ean_code = COALESCE(NULLIF(si.ean_code,''), bc.ean_code)
+       LEFT JOIN product_images pi ON pi.ean_code = COALESCE(NULLIF(si.ean_code,''), bc.ean_code) AND pi.image_type='front'
        WHERE si.sale_id = ANY($1::uuid[])`,
       [ids, cloud]
     )
@@ -665,6 +585,7 @@ router.get('/web/:id', async (req, res) => {
     const s = await pool.query(
       `SELECT
          s.id,
+         s.source,
          s.status,
          s.payment_status,
          s.payment_method,
@@ -709,8 +630,8 @@ router.get('/web/:id', async (req, res) => {
              ELSE NULL
            END
          ) AS image_url,
-         p.name AS product_name,
-         p.brand_name
+         COALESCE(si.product_name_snapshot,p.name) AS product_name,
+         COALESCE(si.brand_name_snapshot,p.brand_name) AS brand_name
        FROM sale_items si
        LEFT JOIN product_variants v ON v.id = si.variant_id
        LEFT JOIN products p ON p.id = v.product_id
@@ -725,7 +646,7 @@ router.get('/web/:id', async (req, res) => {
          ORDER BY b.id ASC
          LIMIT 1
        ) bc ON TRUE
-       LEFT JOIN product_images pi ON pi.ean_code = COALESCE(NULLIF(si.ean_code,''), bc.ean_code)
+       LEFT JOIN product_images pi ON pi.ean_code = COALESCE(NULLIF(si.ean_code,''), bc.ean_code) AND pi.image_type='front'
        WHERE si.sale_id = $1::uuid`,
       [id, cloud]
     )
@@ -761,7 +682,7 @@ router.get('/admin', requireAuth, async (req, res) => {
     if (!isSuper) {
       if (!branchId) return res.status(403).json({ message: 'Forbidden' })
       params.push(branchId)
-       where.push(`(s.branch_id = $${params.length} OR s.is_b2b = true)`)
+       where.push(`s.branch_id = $${params.length}`)
     }
 
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : ''
@@ -806,12 +727,13 @@ router.get('/admin/:id', requireAuth, async (req, res) => {
 if (!isSuper) {
   if (!branchId) return res.status(403).json({ message: 'Forbidden' })
   params.push(branchId)
-  where += ` AND (s.branch_id = $2 OR s.is_b2b = true)`
+  where += ` AND s.branch_id = $2`
 }
 
     const s = await pool.query(
       `SELECT
          s.id,
+         s.source,
          s.status,
          s.payment_status,
          s.payment_method,
@@ -856,8 +778,8 @@ if (!isSuper) {
              ELSE NULL
            END
          ) AS image_url,
-         p.name AS product_name,
-         p.brand_name
+         COALESCE(si.product_name_snapshot,p.name) AS product_name,
+         COALESCE(si.brand_name_snapshot,p.brand_name) AS brand_name
        FROM sale_items si
        LEFT JOIN product_variants v ON v.id = si.variant_id
        LEFT JOIN products p ON p.id = v.product_id
@@ -872,7 +794,7 @@ if (!isSuper) {
          ORDER BY b.id ASC
          LIMIT 1
        ) bc ON TRUE
-       LEFT JOIN product_images pi ON pi.ean_code = COALESCE(NULLIF(si.ean_code,''), bc.ean_code)
+       LEFT JOIN product_images pi ON pi.ean_code = COALESCE(NULLIF(si.ean_code,''), bc.ean_code) AND pi.image_type='front'
        WHERE si.sale_id = $1::uuid`,
       [id, cloud]
     )
@@ -896,47 +818,5 @@ if (!isSuper) {
   }
 })
 
-router.post('/web/b2b-update-status', requireAuth, async (req, res) => {
-  const client = await pool.connect()
-  try {
-    const { sale_id, new_status, new_payment_status } = req.body || {}
-    if (!sale_id) return res.status(400).json({ message: 'sale_id required' })
-
-    await client.query('BEGIN')
-
-    let updates = []
-    let params = [sale_id]
-    let paramIndex = 2
-
-    if (new_status) {
-      updates.push(`status = $${paramIndex}`)
-      params.push(new_status)
-      paramIndex++
-    }
-    if (new_payment_status) {
-      updates.push(`payment_status = $${paramIndex}`)
-      params.push(new_payment_status)
-      paramIndex++
-    }
-
-    if (updates.length === 0) {
-      await client.query('ROLLBACK')
-      return res.status(400).json({ message: 'No valid updates provided' })
-    }
-
-    const q = await client.query(
-      `UPDATE sales SET ${updates.join(', ')}, updated_at=now() WHERE id=$1::uuid RETURNING id, status, payment_status`,
-      params
-    )
-
-    await client.query('COMMIT')
-    return res.json(q.rows[0])
-  } catch (e) {
-    await client.query('ROLLBACK')
-    return res.status(500).json({ message: 'Server error during B2B update' })
-  } finally {
-    client.release()
-  }
-})
 
 module.exports = router

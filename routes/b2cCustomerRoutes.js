@@ -5,7 +5,7 @@ const router = express.Router();
 
 router.post('/signup', async (req, res) => { 
   const { name, email, mobile, password } = req.body;
-  if (!name || !email || !mobile || !password)
+  if (!name || !email || !mobile || !password || String(password).length < 8)
     return res.status(400).json({ message: 'All fields are required' });
 
   try {
@@ -16,7 +16,7 @@ router.post('/signup', async (req, res) => {
       `INSERT INTO userstaras (name, email, mobile, password, type)
        VALUES ($1, $2, $3, $4, $5)
        RETURNING id, name, email, mobile, type`,
-      [name, email, mobile, password, 'B2C']
+      [name, String(email).trim().toLowerCase(), mobile, await require('bcryptjs').hash(password,12), 'B2C']
     );
 
     // Credit signup bonus coins — fire and forget

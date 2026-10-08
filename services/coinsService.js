@@ -214,10 +214,12 @@ async function releaseCoinsOnFailure(userId, saleId) {
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
+    await client.query('SELECT user_id FROM coin_wallets WHERE user_id=$1 FOR UPDATE',[userId])
+    if((await client.query("SELECT 1 FROM coin_transactions WHERE user_id=$1 AND sale_id=$2 AND type='RELEASED'",[userId,saleId])).rows.length){await client.query('COMMIT');return}
 
     // Find the REDEEMED transaction for this sale
     const tx = await client.query(
-      `SELECT amount FROM coin_transactions
+      `SELECT amount,note FROM coin_transactions
        WHERE user_id=$1 AND sale_id=$2 AND type='REDEEMED'
        LIMIT 1`,
       [userId, saleId]
@@ -278,6 +280,7 @@ async function creditEarnedCoins(userId, saleId, orderSubtotal) {
     await client.query('BEGIN')
 
     await ensureWallet(userId, client)
+    await client.query('SELECT user_id FROM coin_wallets WHERE user_id=$1 FOR UPDATE',[userId])
 
     // Check if already credited for this sale (idempotency)
     const existing = await client.query(

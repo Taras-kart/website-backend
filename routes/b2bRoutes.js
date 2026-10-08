@@ -7,6 +7,7 @@
 
 const express = require('express')
 const pool = require('../db')
+const {brandSql,displayBrand}=require('../utils/brands')
 const { requireAuth } = require('../middleware/auth')
 
 const router = express.Router()
@@ -45,7 +46,7 @@ router.get('/products', async (req, res) => {
 
     if (brand) {
       params.push(brand)
-      where.push(`LOWER(brand_name) = LOWER($${params.length})`)
+      where.push(`LOWER(${brandSql('brand_name')}) = LOWER($${params.length})`)
     }
 
     if (gender) {
@@ -67,7 +68,7 @@ router.get('/products', async (req, res) => {
       params
     )
 
-    return res.json(rows)
+    return res.json(rows.map(row=>({...row,brand_name:displayBrand(row.brand_name)})))
   } catch (e) {
     console.error('GET /b2b/products error:', e.message)
     return res.status(500).json({ message: 'Server error' })

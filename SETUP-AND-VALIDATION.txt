@@ -1,0 +1,77 @@
+ATTACH / TARA UPDATED SOURCE — 8 OCTOBER 2026
+
+PACKAGE CONTENTS
+Four separate application ZIPs preserve tara-website/, tara-admin/, tara-superadmin/ and tara-backend/. A separate database-upgrade ZIP contains the same migration supplied with the backend. The Excel reference is also available inside both staff portals.
+
+DEPLOYMENT ORDER
+1. Back up your existing PostgreSQL database and public assets. Test first against a staging copy of your EXISTING database.
+2. Extract each ZIP into its matching project. Preserve your private environment values. Merge the website's new public folder with your original public folder; do not delete original photos or logo1.png. Missing original images use placeholders. New brand assets are under public/images/brands.
+3. Use Node 24.x and run npm ci in each project. Dependencies and generated builds are not included in these source archives.
+4. Backend: configure .env using .env.example as the reference. Set DATABASE_URL, a random JWT_SECRET of at least 32 characters, provider credentials and CORS_ORIGINS containing your three exact frontend origins. Use your database provider's SSL settings.
+5. In tara-backend run npm run migrate, then npm test, then npm start. Check /api/health returns {"ok":true}. The migration requires existing core tables. NEVER apply test/fixture.sql to your real database: it is an isolated test schema, not a production installer.
+6. Frontends: configure REACT_APP_API_BASE to your backend origin WITHOUT an extra /api suffix. Set REACT_APP_STOREFRONT_URL in staff portals. Local ports: backend 5000, website 3000, admin 3001, superadmin 3002. Run npm start for development; npm run build for deployment. Rebuild whenever frontend environment variables change. Publish build/ with SPA routing; Vercel configurations are included.
+7. Sign in again after deployment. Staff sessions now expire and are checked against the current database account/branch. Existing SUPER_ADMIN and BRANCH<number> accounts are supported; newly created branch staff use ADMIN.
+8. On staging, verify an actual product import, POS sale, customer checkout, payment, shipping and stock reconciliation before production rollout.
+
+DATABASE CHANGES
+The migration adds account/branch activation, session revocation, audit and stock movement tables, request idempotency, import hashes, catalogue functions/indexes and order stock-commit tracking. Product images support unique EAN plus image type, allowing front/back/side/detail views. Wholesale items have separate product references and name snapshots.
+
+Apply via npm run migrate, which commits enum additions before the main migration transaction. Re-running is supported. Existing business records are retained. Branch/admin deletion is implemented as deactivation to preserve historical sales and inventory; live commitments must be resolved before branch deactivation. Legacy reserved quantities are not blindly reset: reconcile them with actual stock and open orders.
+
+PRODUCT FAMILY AND BRAND RULES
+One retail card represents one style, with all active colours/sizes available inside its detail page. Matching legacy records under separate product IDs are grouped too. Identity uses source brand, product name, design/pattern, department, category, fit and pack size. Keep these consistent across colours/sizes; use distinct design codes for different designs. Conflicting legacy names/categories require data correction rather than guessed merges.
+
+Approved public names: Twin Birds, Charak, Intimacy, Jockey, Gokul, Dixcy Scott, Pomex, Milton, Aswati, Quick Dry, Selvas, Cucumber, Dazzle Prime, Techno Sport. Other brands display Fashion while staff retain the actual source brand. Poomex maps to Pomex; Twinbirds maps to Twin Birds.
+
+Brands navigation follows brand -> category -> subcategory -> filtered products. Filters remain in the URL and changing them changes results. Brand/category counts are derived from active catalogue records.
+
+Logo sources are recorded in src/services/brandAssets.json. Dazzle Prime uses the Dazzle Sportswear parent mark; Gokul uses its mark within brand-channel creative; Aswati uses its channel avatar. Replace these with your own higher-resolution approved assets if available. Fashion is a text label.
+
+STAFF ACCESS AND INVENTORY
+Branch admins can work only with their assigned branch's retail stock, sales, product entry, imports, POS and movements. The API enforces this restriction. Superadmin can select any branch or all branches, manage branches/admins, shared prices, categories, customers, homepage media, shipping, rewards, wholesale operations and audit records.
+
+Shared catalogue prices apply across branches; changes to existing shared prices require superadmin. Stock adjustments use the selected branch and reject stale updates. POS scanning is read-only; confirmed sales deduct stock atomically, and retrying the same confirmation does not deduct twice. Normal staff pages use light backgrounds, with black navigation and mobile layouts.
+
+MANUAL PRODUCT ENTRY
+Choose branch -> department -> category/subcategory. Enter name, source brand, style code, fit, colour, size, unique EAN, prices, pack size and opening quantity. Repeat with the same style fields for additional colours/sizes and a different EAN. Quantity means selling units/packs, not individual pieces inside a pack. Prices are per selling unit. A positive discount percentage takes priority over selling price; otherwise selling price, then MRP, is used.
+
+EXCEL REFERENCE
+Use Tara-Product-Import-Template.xlsx. Products is the first sheet; Instructions is the second. Replace/remove the four DEMO rows before uploading actual stock. One row represents one colour and size. Keep EANCode as TEXT to preserve leading zeroes.
+
+Exact columns:
+ProductName, BrandName, PATTERN, FITT, SIZE, COLOUR, EANCode, MRP, RSalePrice, CostPrice, B2CDiscount, B2BDiscount, PurchaseQty, PackSize.
+
+Select branch, department and category before uploading. One file belongs to that selected branch/category. Upload XLSX/CSV, review validation errors and process the job. Limits: 10 MB, 20,000 rows, batched processing. Re-uploading the identical file for the same branch/category resumes/reuses its original job and does not duplicate stock. A new receipt needs a distinct receipt file.
+
+IMAGES
+Upload an image ZIP after products exist. Example filenames:
+0089000000011.jpg
+0089000000011__back.jpg
+0089000000011__side.jpg
+0089000000011__detail1.jpg
+The prefix must match the EAN exactly. JPG/JPEG/PNG/WebP are supported. Shared product/colour/fit naming is also explained in the page. Configure Cloudinary server credentials or supported Blob storage. Uploads go through the authenticated backend; no private upload credentials belong in React.
+
+CHECKOUT, PAYMENTS AND SHIPPING
+Retail checkout derives totals from the database, ignores client payment flags/prices and chooses one active branch able to fulfil the complete basket. WEB_BRANCH_ID optionally fixes online fulfilment to one branch. A basket that cannot be fulfilled by one branch is rejected with an availability message.
+
+Stock is committed when an order is created and is not deducted again for shipping. Pending online orders hold stock until paid or cancelled. Eligible unshipped customer cancellations restore committed stock and coins once. Real prepaid refunds still require provider processing and recording through the existing order-issues workflow; automatic provider refunds are not claimed.
+
+Keep GIFT_WRAP_FEE=39 and DELIVERY_FEE=0 to match the current storefront. If changing commercial policy, update customer-facing cart amounts too.
+
+Razorpay requires backend key ID, key secret and webhook secret. Verification checks signature, captured status, amount, currency and order reference. Signed webhook endpoint: /api/razorpay/webhook. No live payment was made during development.
+
+Shiprocket requires SHIPROCKET_API_USER_EMAIL, SHIPROCKET_API_USER_PASSWORD and SHIPROCKET_WEBHOOK_TOKEN. In superadmin Shipping map each branch to its real pickup ID and exact pickup name. Configure the webhook's x-api-key to match your token. Real courier allocation, labels and tracking require testing with your account.
+
+Wholesale retains the existing shared b2b_products warehouse, separate from retail branch stock. A preferred branch is a fulfilment request, not branch-specific wholesale availability. The repaired wholesale checkout validates identity/prices and records the correct wholesale product. Superadmin approval deducts warehouse stock once, then the manual workflow records received payment, dispatch and delivery. Ambiguous legacy wholesale product references require review before approval.
+
+PERFORMANCE
+Main retail listings request 24 styles per page, capped at 48. Product detail fetches one family. Large bulk catalogue requests and the artificial loading delay are removed from main shopping flows. Pages are lazy loaded; public reads use short caching; responses are compressed; relevant indexes are included. Checkout/POS always recheck stock and price. No production speed percentage is claimed: hosting, database latency and original image sizes still matter.
+
+VERIFICATION
+Three CI production builds passed: website, admin, superadmin.
+17 backend integration tests passed, 0 failed, against an isolated PostgreSQL-compatible PGlite fixture.
+Coverage includes migration repeatability, authorization, branch isolation, manual entry, barcode conflicts, product grouping/colours, Fashion masking, pagination, POS atomicity/idempotency, checkout identity/totals, cancellation/coin restoration, stale stock protection, account revocation, CSV/XLSX import, EAN leading zeroes, galleries, categories, sale status, mocked payment verification, legacy split product IDs and wholesale stock approval.
+Five browser flows passed: brand/category/subcategory filters; colour/size selection; branch-admin navigation; superadmin branch switching; wholesale basket and checkout submission. Desktop 1440px and mobile 390px layouts, product entry, login and overflow were checked. The actual delivered Excel workbook was visually inspected and imported in a backend test.
+
+LIMITS
+The configured live database could not be reached: DNS lookup returned EAI_AGAIN. Tests used an inferred fixture schema, not a production database dump. No production migration, deployment or live-data mutation was performed. Production schema/data compatibility and real payment/shipping/email integrations remain to be verified in staging. Original storefront public photos were not supplied and must be merged from your copy. This package is not a guarantee that every legacy feature or historical data issue is resolved.

@@ -1,6 +1,7 @@
 const express = require('express');
 const pool = require('../db');
 const router = express.Router();
+const { brandSql } = require('../utils/brands');
 const WEB_BRANCH_ID = (() => {
   const v = parseInt(process.env.WEB_BRANCH_ID || '', 10);
   return Number.isFinite(v) && v > 0 ? v : null;
@@ -92,7 +93,7 @@ const parsePriceRangeFromQuery = raw => {
     }
   }
   let cleaned = original.replace(/\b(under|below|between|upto|up to|less than|greater than|above|over|more than|price|rs|rs\.|rupees)\b/gi, ' ');
-  cleaned = cleaned.replace(/\d+/g, ' ');
+  if (priceMin != null || priceMax != null) cleaned = cleaned.replace(/\d+/g, ' ');
   cleaned = cleaned.replace(/₹/g, ' ');
   cleaned = cleaned.replace(/\s+/g, ' ').trim();
   return {
@@ -173,7 +174,7 @@ async function fetchImageList({
   limit
 }) {
   const params = [];
-  let where = 'v.is_active = TRUE';
+  let where = 'v.is_active = TRUE AND p.is_active = TRUE';
   if (gender) {
     params.push(gender);
     where += ` AND p.gender = $${params.length}`;
@@ -190,7 +191,7 @@ async function fetchImageList({
         v.id AS id,
         p.id AS product_id,
         p.name AS product_name,
-        p.brand_name AS brand,
+        ${brandSql('p.brand_name')} AS brand,
         p.gender AS gender,
         v.colour AS color,
         v.size AS size,
@@ -270,7 +271,7 @@ const buildProductSelectSql = ({
     v.id AS id,
     p.id AS product_id,
     p.name AS product_name,
-    p.brand_name AS brand,
+    ${brandSql('p.brand_name')} AS brand,
     p.gender AS gender,
     p.category_id AS category_id,
     pc.name AS category_name,
@@ -297,7 +298,7 @@ const buildProductSelectSql = ({
     END AS final_price_b2b,
     v.mrp::numeric AS mrp,
     v.sale_price::numeric AS sale_price,
-    COALESCE(NULLIF(v.cost_price,0), 0)::numeric AS cost_price,
+    
     COALESCE(bvs.on_hand, 0)::int AS on_hand,
     COALESCE(bvs.reserved, 0)::int AS reserved,
     GREATEST(COALESCE(bvs.on_hand, 0) - COALESCE(bvs.reserved, 0), 0)::int AS available_qty,
@@ -469,12 +470,12 @@ router.get('/', async (req, res) => {
     } = parsePriceRangeFromQuery(qRaw);
     const q = cleanedQuery || qRaw;
     const rawLimit = parseInt(req.query.limit || '200', 10);
-    const limit = Math.max(1, Math.min(50000, Number.isFinite(rawLimit) ? rawLimit : 200));
+    const limit = Math.max(1, Math.min(500, Number.isFinite(rawLimit) ? rawLimit : 200));
     const offset = Math.max(0, parseInt(req.query.offset || '0', 10));
     const wantRandom = String(req.query.random || '').trim() === '1';
     const wantHasImageOnly = String(req.query.hasImage || '').toLowerCase() === 'true';
     const params = [];
-    let where = 'v.is_active = TRUE';
+    let where = 'v.is_active = TRUE AND p.is_active = TRUE';
     if (genderQ) {
       params.push(genderQ);
       where += ` AND p.gender = $${params.length}`;
@@ -483,7 +484,7 @@ router.get('/', async (req, res) => {
       params.push(`%${brand}%`);
       where += ` AND p.brand_name ILIKE $${params.length}`;
     }
-    const tokens = buildTokens(q);
+    const tokens = normalizeText(q).split(' ').filter(t => t && !STOPWORDS.has(t));
     if (tokens.length) {
       const parts = [];
       for (const t of tokens) {
@@ -543,12 +544,12 @@ router.get('/suggest', async (req, res) => {
     const q = cleanedQuery || qRaw;
     const branchId = getBranchIdFromReq(req);
     const params = [];
-    let where = 'v.is_active = TRUE';
+    let where = 'v.is_active = TRUE AND p.is_active = TRUE';
     if (genderQ) {
       params.push(genderQ);
       where += ` AND p.gender = $${params.length}`;
     }
-    const tokens = buildTokens(q);
+    const tokens = normalizeText(q).split(' ').filter(t => t && !STOPWORDS.has(t));
     if (tokens.length) {
       const parts = [];
       for (const t of tokens) {
@@ -568,7 +569,7 @@ router.get('/suggest', async (req, res) => {
       WITH base AS (
         SELECT DISTINCT
           p.name AS product_name,
-          p.brand_name AS brand,
+          ${brandSql('p.brand_name')} AS brand,
           p.gender AS gender,
           v.colour AS color,
           pc.name AS category_name,
@@ -639,7 +640,7 @@ router.get('/category/:category', async (req, res) => {
     const wantRandom = String(req.query.random || '').trim() === '1';
     const wantHasImageOnly = String(req.query.hasImage || '').toLowerCase() === 'true';
     const params = [];
-    let where = 'v.is_active = TRUE';
+    let where = 'v.is_active = TRUE AND p.is_active = TRUE';
     if (g) {
       params.push(g);
       where += ` AND p.gender = $${params.length}`;
@@ -677,7 +678,7 @@ router.get('/gender/:gender', async (req, res) => {
     const wantRandom = String(req.query.random || '').trim() === '1';
     const wantHasImageOnly = String(req.query.hasImage || '').toLowerCase() === 'true';
     const params = [];
-    let where = 'v.is_active = TRUE';
+    let where = 'v.is_active = TRUE AND p.is_active = TRUE';
     if (g) {
       params.push(g);
       where += ` AND p.gender = $${params.length}`;
@@ -725,7 +726,7 @@ router.get('/search', async (req, res) => {
     const tokens = buildTokens(cleanedQuery || String(queryRaw));
     const genderQ = toGender(req.query.gender || req.query.category || '');
     const params = [];
-    let where = 'v.is_active = TRUE';
+    let where = 'v.is_active = TRUE AND p.is_active = TRUE';
     if (genderQ) {
       params.push(genderQ);
       where += ` AND p.gender = $${params.length}`;
@@ -835,7 +836,7 @@ router.get('/:id(\\d+)', async (req, res) => {
       rows
     } = await pool.query(`
       ${buildProductSelectSql({
-      where: 'v.id = $1',
+      where: 'v.id = $1 AND v.is_active=TRUE AND p.is_active=TRUE',
       branchIdx,
       cloudIdx
     })}
@@ -951,7 +952,7 @@ router.put('/:id(\\d+)', async (req, res) => {
     const cloud = process.env.CLOUDINARY_CLOUD_NAME || 'deymt9uyh';
     const refreshed = await client.query(`
       ${buildProductSelectSql({
-      where: 'v.id = $1',
+      where: 'v.id = $1 AND v.is_active=TRUE AND p.is_active=TRUE',
       branchIdx: 2,
       cloudIdx: 3
     })}

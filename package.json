@@ -3,16 +3,19 @@
   "version": "1.0.0",
   "main": "api/index.js",
   "scripts": {
-    "start": "node api/index.js"
+    "start": "node server.js",
+    "migrate": "node scripts/migrate.js",
+    "test": "node --test test/*.test.js"
   },
   "engines": {
-    "node": "20.x"
+    "node": ">=20 <25"
   },
   "dependencies": {
     "@vercel/blob": "^0.24.1",
     "axios": "^1.12.2",
     "bcryptjs": "^3.0.2",
     "cloudinary": "^1.41.3",
+    "compression": "^1.8.2",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
@@ -24,5 +27,9 @@
     "unzipper": "^0.10.14",
     "uuid": "^13.0.0",
     "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
+    "supertest": "^7.3.1"
   }
 }
