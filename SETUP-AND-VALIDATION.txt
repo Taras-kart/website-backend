@@ -1,4 +1,15 @@
-ATTACH / TARA UPDATED SOURCE — 8 OCTOBER 2026
+ATTACH / TARA UPDATED SOURCE — 8 OCTOBER 2026 — UI AND IMAGE REVISION
+
+THIS REVISION
+The collection heading and sort control share a compact desktop row. Customer-facing style totals are removed. Filters now use independent checkboxes with OR within each selected group and AND across groups; category selections include descendants. Mobile uses a scrolling drawer with close, reset, keyboard support and Show products controls. Price changes apply after validation.
+
+Brand category/subcategory cards now render images. Category photos are provided by the backend from matching products, including descendants, rather than searching only the first 36 storefront products. Brand-specific categories use products from that brand. Image candidates include shared colour/fit photos, generic-fit photos, variant uploads and images attached to every barcode for the same colour/fit across sizes. Existing Cloudinary EAN paths remain supported. A missing image advances to the next candidate before a placeholder is used; a sibling image never changes the selected variant, barcode or stock identity. Filter-only and brand-directory requests skip image hydration.
+
+Read-only checks confirmed the reported ELESTIC SPORTS BRA family has a first size without its own barcode/image URL, while two same-family Cloudinary image URLs returned HTTP 200 image/jpeg. Therefore the observed case requires frontend/backend image selection fixes, not deleting products or re-uploading the database. Separate similarly spelled colour labels remain separate until the source data is corrected.
+
+The admin and superadmin App/Login files no longer import portalConfig. This removes the missing-module failure reported by Vercel. Copy the complete updated src trees and package/config files from these ZIPs, commit all new files, then redeploy. Preserve your existing environment values and merge public assets.
+
+Deploy the backend revision first, then the website and staff portals. This revision adds no new tables or migration beyond the previously supplied 001_catalogue_and_access.sql. If that migration is already installed, no additional database upgrade is needed for these fixes. If upgrading from the original source, follow the migration instructions below. No production deployment or database mutation was performed here.
 
 PACKAGE CONTENTS
 Four separate application ZIPs preserve tara-website/, tara-admin/, tara-superadmin/ and tara-backend/. A separate database-upgrade ZIP contains the same migration supplied with the backend. The Excel reference is also available inside both staff portals.
@@ -23,7 +34,7 @@ One retail card represents one style, with all active colours/sizes available in
 
 Approved public names: Twin Birds, Charak, Intimacy, Jockey, Gokul, Dixcy Scott, Pomex, Milton, Aswati, Quick Dry, Selvas, Cucumber, Dazzle Prime, Techno Sport. Other brands display Fashion while staff retain the actual source brand. Poomex maps to Pomex; Twinbirds maps to Twin Birds.
 
-Brands navigation follows brand -> category -> subcategory -> filtered products. Filters remain in the URL and changing them changes results. Brand/category counts are derived from active catalogue records.
+Brands navigation follows brand -> category -> subcategory -> filtered products. Filters remain in the URL and changing them changes results. Filter options are derived from active catalogue records; internal counts are not displayed as style totals.
 
 Logo sources are recorded in src/services/brandAssets.json. Dazzle Prime uses the Dazzle Sportswear parent mark; Gokul uses its mark within brand-channel creative; Aswati uses its channel avatar. Replace these with your own higher-resolution approved assets if available. Fashion is a text label.
 
@@ -69,9 +80,9 @@ Main retail listings request 24 styles per page, capped at 48. Product detail fe
 
 VERIFICATION
 Three CI production builds passed: website, admin, superadmin.
-17 backend integration tests passed, 0 failed, against an isolated PostgreSQL-compatible PGlite fixture.
+20 backend integration tests passed, 0 failed, against an isolated PostgreSQL-compatible PGlite fixture.
 Coverage includes migration repeatability, authorization, branch isolation, manual entry, barcode conflicts, product grouping/colours, Fashion masking, pagination, POS atomicity/idempotency, checkout identity/totals, cancellation/coin restoration, stale stock protection, account revocation, CSV/XLSX import, EAN leading zeroes, galleries, categories, sale status, mocked payment verification, legacy split product IDs and wholesale stock approval.
-Five browser flows passed: brand/category/subcategory filters; colour/size selection; branch-admin navigation; superadmin branch switching; wholesale basket and checkout submission. Desktop 1440px and mobile 390px layouts, product entry, login and overflow were checked. The actual delivered Excel workbook was visually inspected and imported in a backend test.
+Seven browser flows passed: brand/category/subcategory filters; compact heading and mobile checkbox filters; loaded product images and colour/size selection; women category images; branch-admin navigation; superadmin branch switching; wholesale basket and checkout submission. Desktop 1440px and mobile 390px layouts, product entry, login and overflow were checked. The actual delivered Excel workbook was visually inspected and imported in a backend test.
 
 LIMITS
-The configured live database could not be reached: DNS lookup returned EAI_AGAIN. Tests used an inferred fixture schema, not a production database dump. No production migration, deployment or live-data mutation was performed. Production schema/data compatibility and real payment/shipping/email integrations remain to be verified in staging. Original storefront public photos were not supplied and must be merged from your copy. This package is not a guarantee that every legacy feature or historical data issue is resolved.
+The earlier direct live database connection could not be reached: DNS lookup returned EAI_AGAIN. This revision also checked public live catalogue/category API responses and two Cloudinary images read-only. Automated database tests used an inferred fixture schema, not a production database dump. No production migration, deployment or live-data mutation was performed. Production schema/data compatibility and real payment/shipping/email integrations remain to be verified in staging. Original storefront public photos were not supplied and must be merged from your copy. This package is not a guarantee that every legacy feature or historical data issue is resolved.

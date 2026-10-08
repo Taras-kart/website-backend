@@ -172,3 +172,34 @@ test('wholesale request preserves product identity, derives price and approves s
  assert.equal((await update('DELIVERED')).status,200)
  assert.equal((await request(app).post('/api/sales/web/b2b-update-status').set(auth(admin)).send({sale_id:sale.id,new_status:'CANCELLED'})).status,403)
 })
+test('checkbox filters combine brands, departments and category subtrees accurately',async()=>{
+ const read=async query=>{const r=await request(app).get('/api/products/catalogue').query(query);assert.equal(r.status,200,JSON.stringify(r.body));return r.body}
+ const twin=await read({brand:'Twin Birds'}),fashion=await read({brand:'Fashion'})
+ const both=await read({brand:'Twin Birds,Fashion',gender:'WOMEN,MEN',categoryId:'2,3'})
+ assert.equal(both.total,twin.total+fashion.total)
+ assert(both.products.every(p=>['Twin Birds','Fashion'].includes(p.brand)))
+ assert.equal((await read({brand:'Twin Birds,Fashion',categorySlug:'leggings'})).total,both.total)
+ assert.equal((await read({brand:'Twin Birds',gender:'MEN'})).total,0)
+ const price=await read({brand:'Twin Birds,Fashion',min:'690',max:'700'})
+ assert(price.products.length>0);assert(price.products.every(p=>Number(p.final_price_b2c)>=690&&Number(p.final_price_b2c)<=700))
+})
+test('image lookup uses alternate barcodes, same-colour sizes and generic-fit uploads without changing identity',async()=>{
+ const source=(await q('SELECT product_id FROM product_variants WHERE id=$1',[variant1])).rows[0].product_id
+ const sibling=(await q("INSERT INTO product_variants(product_id,size,colour,fit,mrp,image_url) VALUES($1,'XXL','Black','Slim',799,'/images/defaults/product.svg') RETURNING id",[source])).rows[0].id
+ await q("INSERT INTO barcodes(variant_id,ean_code) VALUES($1,'SECOND-BARCODE')",[variant1])
+ await q("INSERT INTO product_images(ean_code,image_url,image_type) VALUES('SECOND-BARCODE','https://example.test/alternate.jpg','front')")
+ const {hydrate}=require('../utils/catalogue')
+ let image=(await hydrate([sibling]))[0]
+ assert.equal(image.ean_code,null);assert(image.images.includes('https://example.test/alternate.jpg'));assert(image.image_candidates.some(url=>url.endsWith('/products/8900000000011')))
+ assert(!image.image_candidates.some(url=>url.endsWith('/products/8900000000028')))
+ assert(!image.image_candidates.some(url=>url.includes('/defaults/')))
+ await q("INSERT INTO product_colour_images(product_id,colour,fit,image_url) VALUES($1,' Black ','','https://example.test/generic-fit.jpg')",[source])
+ image=(await hydrate([sibling]))[0];assert.equal(image.image_url,'https://example.test/generic-fit.jpg')
+ const navy=(await hydrate([variant2]))[0];assert(!navy.image_candidates.includes('https://example.test/generic-fit.jpg'))
+})
+test('brand category images come from descendant products and stay scoped to the brand',async()=>{
+ const facets=await request(app).get('/api/products/facets?brand=Twin%20Birds');assert.equal(facets.status,200,JSON.stringify(facets.body))
+ for(const id of [1,2,3]){const category=facets.body.categories.find(c=>c.id===id);assert(category.images.includes('https://example.test/generic-fit.jpg'));assert(category.representative_image)}
+ const fashion=await request(app).get('/api/products/facets?brand=Fashion');assert.equal(fashion.status,200);assert(fashion.body.categories.every(c=>!c.images.includes('https://example.test/generic-fit.jpg')))
+ const light=await request(app).get('/api/products/facets?images=false');assert.equal(light.status,200);assert(light.body.categories.every(c=>c.images.length===0))
+})
