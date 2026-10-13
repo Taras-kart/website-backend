@@ -1,5 +1,6 @@
 const pool = require('../db')
 const { brandSql } = require('./brands')
+const { subtypeSql, slugs: validSubtypes } = require('./subtypes')
 const clean = value => String(value || '').trim()
 const styleSql = `tara_style_key(p.brand_name,p.name,p.pattern_code,p.gender::text,p.category_id,COALESCE(NULLIF(v.fit,''),p.fit_type,''),v.pack_size)`
 const priceSql = type => `ROUND(v.mrp::numeric * (100 - LEAST(100,GREATEST(0,COALESCE(v.${type === 'B2B' ? 'b2b' : 'b2c'}_discount_pct,0)))) / 100,2)`
@@ -24,6 +25,11 @@ function filters(query = {}, type = 'B2C') {
   for (const word of clean(query.q).split(/\s+/).filter(Boolean).slice(0,8)) add(`concat_ws(' ',p.name,${brandSql('p.brand_name')},pc.name,p.pattern_code,v.colour,p.gender) ILIKE ?`, `%${word.replace(/[\\%_]/g, '\\$&')}%`)
   if (query.min !== undefined && clean(query.min)) add(`${sellingSql(type)}>=?::numeric`, Math.max(0,Number(query.min)||0))
   if (query.max !== undefined && clean(query.max)) add(`${sellingSql(type)}<=?::numeric`, Math.max(0,Number(query.max)||0))
+  if (query.subtype) {
+    const subtype = clean(query.subtype).toLowerCase()
+    if (validSubtypes.includes(subtype)) add(`${subtypeSql}=?`, subtype)
+    else where.push('FALSE')
+  }
   if (query.sale === 'true') where.push(`${sellingSql(type)}<v.mrp`)
   if (query.inStock === 'true') where.push(`${availableSql}>0`)
   if (query.excludeInnerwear === 'true') where.push(`COALESCE(pc.name,'') !~* '(bra|panty|brief|innerwear|camisole|slip)'`)

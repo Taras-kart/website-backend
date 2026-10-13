@@ -52,6 +52,22 @@ test('catalogue returns one card per style and detail includes every colour',asy
  const leaf=await request(app).get('/api/products/catalogue?brand=Twin%20Birds&categoryId=3');assert.equal(leaf.body.total,1)
  const empty=await request(app).get('/api/products/catalogue?brand=Jockey&categoryId=3');assert.equal(empty.body.total,0)
 })
+test('brand subcategories route and subtype catalogue filter use the same matching rules', async()=>{
+ const groups=await request(app).get('/api/products/subcategories?brand=Twin%20Birds&categoryId=2')
+ assert.equal(groups.status,200,JSON.stringify(groups.body))
+ assert.equal(groups.body.total,1)
+ assert(groups.body.subcategories.some(group=>group.slug==='shimmer'&&group.count===1))
+ const bySubtype=await request(app).get('/api/products/catalogue?brand=Twin%20Birds&categoryId=2&subtype=shimmer')
+ assert.equal(bySubtype.status,200,JSON.stringify(bySubtype.body))
+ assert.equal(bySubtype.body.total,1)
+ const noMatch=await request(app).get('/api/products/catalogue?brand=Twin%20Birds&categoryId=2&subtype=cotton')
+ assert.equal(noMatch.status,200)
+ assert.equal(noMatch.body.total,0)
+ const empty=await request(app).get('/api/products/subcategories?brand=Twin%20Birds&categoryId=999999')
+ assert.equal(empty.status,200,JSON.stringify(empty.body))
+ assert.deepEqual(empty.body,{subcategories:[],total:0})
+ assert.equal((await request(app).get('/api/products/subcategories?brand=Twin%20Birds&categoryId=not-a-number')).status,400)
+})
 test('unknown brands display Fashion without collapsing different source brands',async()=>{
  for(const [brand,ean] of [['Example Maker A','CUSTOM-A'],['Example Maker B','CUSTOM-B']]){const r=await request(app).post('/api/manage/products').set(auth(admin)).send(product({name:'Everyday leggings',brand,ean,pattern:''}));assert.equal(r.status,201,JSON.stringify(r.body))}
  const r=await request(app).get('/api/products/catalogue?brand=Fashion');assert.equal(r.status,200,JSON.stringify(r.body));assert.equal(r.body.total,2);assert(r.body.products.every(p=>p.brand==='Fashion'))

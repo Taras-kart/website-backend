@@ -2,6 +2,7 @@ const express = require('express')
 const pool = require('../db')
 const { brands, brandSql } = require('../utils/brands')
 const { styleSql, sellingSql, availableSql, joins, activeSql, categoryCte, filters, hydrate, branchId, hasImageSql } = require('../utils/catalogue')
+const { subtypeSql } = require('../utils/subtypes')
 const router = express.Router()
 const wrap = fn => (req,res,next) => Promise.resolve(fn(req,res)).catch(next)
 const cache = res => { res.removeHeader('Pragma');res.removeHeader('Expires');return res.set('Cache-Control','public, max-age=15, s-maxage=30, stale-while-revalidate=30') }
@@ -19,8 +20,45 @@ router.get('/catalogue',wrap(async(req,res) => {
   if (!grouped.length && offset) total = Number((await pool.query(`${categoryCte} SELECT COUNT(DISTINCT ${styleSql})::int total ${joins} WHERE ${where}`,params)).rows[0].total)
   cache(res).json({products:rows,total,offset,limit,hasMore:offset+rows.length<total})
 }))
+// Public, brand-scoped, descendant-aware style groups for the storefront.
+// A missing/empty category returns a valid empty result, not an HTTP 404.
+router.get('/subcategories',wrap(async(req,res) => {
+  const brand = String(req.query.brand || '').trim()
+  const categoryId = Number(req.query.categoryId)
+  if (!brand || !Number.isSafeInteger(categoryId) || categoryId <= 0) {
+    return res.status(400).json({ message: 'A valid brand and categoryId are required' })
+  }
+  const { params, where } = filters({ brand, categoryId, gender: req.query.gender })
+  const sql = `${categoryCte}, matched AS (
+    SELECT ${styleSql} style_key, ${subtypeSql} subtype, v.id variant_id,
+      ${hasImageSql} has_image,
+      EXISTS (SELECT 1 FROM barcodes bc WHERE bc.variant_id = v.id) has_barcode
+    ${joins} WHERE ${where}
+  ), distinct_styles AS (
+    SELECT subtype, style_key,
+      (ARRAY_AGG(variant_id ORDER BY has_image DESC, has_barcode DESC, variant_id))[1] representative_id
+    FROM matched GROUP BY subtype, style_key
+  )
+  SELECT subtype slug, COUNT(*)::int count,
+    (ARRAY_AGG(representative_id ORDER BY representative_id))[1] representative_id
+  FROM distinct_styles GROUP BY subtype ORDER BY count DESC, subtype`
+  const rows = (await pool.query(sql, params)).rows
+  const variants = await hydrate(rows.map(row => Number(row.representative_id)))
+  const byId = new Map(variants.map(variant => [Number(variant.id), variant]))
+  const subcategories = rows.map(row => {
+    const product = byId.get(Number(row.representative_id))
+    const images = [...new Set([
+      ...(Array.isArray(product?.image_candidates) ? product.image_candidates : []),
+      ...(Array.isArray(product?.images) ? product.images : []),
+      product?.image_url
+    ].filter(Boolean))]
+    return { slug: row.slug, count: Number(row.count),
+      representative_image: images[0] || null, images }
+  })
+  cache(res).json({ subcategories, total: subcategories.reduce((total, row) => total + row.count, 0) })
+}))
 router.get('/facets',wrap(async(req,res) => {
-  const {params,where} = filters({gender:req.query.gender,brand:req.query.brand})
+  const {params,where} = filters({gender:req.query.gender,brand:req.query.brand,categoryId:req.query.categoryId,subtype:req.query.subtype})
   const includeImages=req.query.images!=='false'
   const rows = (await pool.query(`${categoryCte}, matched AS (SELECT v.id variant_id,${includeImages?hasImageSql:'FALSE'} has_image,${includeImages?'EXISTS(SELECT 1 FROM barcodes mb WHERE mb.variant_id=v.id)':'FALSE'} has_barcode,p.category_id,${brandSql('p.brand_name')} brand,${styleSql} style_key ${joins} WHERE ${where}), ancestry AS (SELECT id id,id leaf_id FROM visible_categories UNION ALL SELECT c.parent_id,a.leaf_id FROM ancestry a JOIN visible_categories c ON c.id=a.id WHERE c.parent_id IS NOT NULL) SELECT c.id,c.parent_id,c.name,c.slug,c.gender,c.level,c.sort_order,COUNT(DISTINCT m.style_key)::int product_count,(array_agg(m.variant_id ORDER BY m.has_image DESC,m.has_barcode DESC,m.variant_id))[1:6] image_variant_ids,MAX((SELECT COALESCE(to_jsonb(original)->>'image_url',to_jsonb(original)->>'representative_image') FROM product_categories original WHERE original.id=c.id)) category_image FROM visible_categories c JOIN ancestry a ON a.id=c.id JOIN matched m ON m.category_id=a.leaf_id GROUP BY c.id,c.parent_id,c.name,c.slug,c.gender,c.level,c.sort_order ORDER BY c.sort_order,c.name`,params)).rows
   const imageProducts=req.query.images==='false'?[]:await hydrate([...new Set(rows.flatMap(row=>row.image_variant_ids||[]))])
