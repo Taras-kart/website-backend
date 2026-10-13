@@ -3,6 +3,7 @@ const bcrypt=require('bcryptjs')
 const pool=require('../db')
 const {requireAuth,requireSuperAdmin,scopeBranch}=require('../middleware/auth')
 const {saveVariant,numeric,clean,fail}=require('../services/catalogueWrite')
+const {retireVariant}=require('../services/productRetirement')
 const router=express.Router()
 const wrap=fn=>(req,res,next)=>Promise.resolve(fn(req,res)).catch(next)
 const audit=(db,req,action,id,details={},branch=null)=>db.query('INSERT INTO tara_audit_log(user_id,branch_id,action,entity_id,details) VALUES($1,$2,$3,$4,$5::jsonb)',[req.user.id,branch,action,String(id),JSON.stringify(details)])
@@ -78,7 +79,7 @@ router.delete('/admins/:id',requireSuperAdmin,wrap(async(req,res)=>{
 router.get('/stock',wrap(async(req,res)=>{
   const branch=scopeBranch(req,false),{limit,offset}=page(req)
   const params=[branch,`%${clean(req.query.q)}%`,req.query.low==='true',limit,offset]
-  const where=`($1::bigint IS NULL OR s.branch_id=$1) AND (concat_ws(' ',p.name,p.brand_name,v.size,v.colour,bc.ean_code) ILIKE $2) AND (NOT $3::boolean OR s.on_hand-s.reserved<=5)`
+  const where=`v.is_active=TRUE AND p.is_active=TRUE AND ($1::bigint IS NULL OR s.branch_id=$1) AND (concat_ws(' ',p.name,p.brand_name,v.size,v.colour,bc.ean_code) ILIKE $2) AND (NOT $3::boolean OR s.on_hand-s.reserved<=5)`
   const from=`FROM branch_variant_stock s JOIN branches b ON b.id=s.branch_id JOIN product_variants v ON v.id=s.variant_id JOIN products p ON p.id=v.product_id LEFT JOIN product_categories c ON c.id=p.category_id LEFT JOIN LATERAL (SELECT ean_code FROM barcodes WHERE variant_id=v.id ORDER BY id LIMIT 1) bc ON TRUE`
   const rows=(await pool.query(`SELECT s.branch_id,b.name branch_name,v.id variant_id,p.id product_id,p.name,p.brand_name,p.gender,p.category_id,c.name category_name,p.pattern_code,v.size,v.colour,v.fit,v.pack_size,v.mrp,v.sale_price,v.b2c_discount_pct,v.b2b_discount_pct,v.image_url,bc.ean_code,s.on_hand,s.reserved,GREATEST(s.on_hand-s.reserved,0) available,s.is_active ${from} WHERE ${where} ORDER BY b.name,p.name,v.colour,v.size,v.id LIMIT $4 OFFSET $5`,params)).rows
   const total=(await pool.query(`SELECT COUNT(*)::int total ${from} WHERE ${where}`,params.slice(0,3))).rows[0].total
@@ -88,6 +89,18 @@ router.post('/products',wrap(async(req,res)=>{
   const branch=scopeBranch(req)
   const result=await transaction(async db=>{const row=await saveVariant(db,req.body,branch,req.user);await audit(db,req,'PRODUCT_RECEIVED',row.variant_id,{quantity:req.body.quantity},branch);return row})
   res.status(201).json(result)
+}))
+// Full product deletion (separate from hiding inventory in one branch).
+// Runs in a single transaction; barcode rows are actually removed for re-upload.
+router.delete('/products/:id',wrap(async(req,res)=>{
+  const branch=scopeBranch(req,false)
+  const id=numeric(req.params.id,'Variant',{integer:true,min:1})
+  const result=await transaction(async db=>{
+    const retired=await retireVariant(db,id,{user:req.user,branchId:branch})
+    await audit(db,req,'PRODUCT_DELETED',id,{released_barcodes:retired.barcodes},branch)
+    return retired
+  })
+  res.json(result)
 }))
 router.patch('/stock/:variantId',wrap(async(req,res)=>{
   const branch=scopeBranch(req),id=numeric(req.params.variantId,'Variant',{integer:true,min:1}),onHand=numeric(req.body.on_hand,'Stock',{integer:true}),expected=numeric(req.body.expected_on_hand,'Previous stock',{integer:true})

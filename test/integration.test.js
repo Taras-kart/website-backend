@@ -219,3 +219,24 @@ test('customer lists require super admin authorization and return arrays',async(
   const response=await request(app).get(endpoint).set(auth(superadmin));assert.equal(response.status,200);assert(Array.isArray(response.body))
  }
 })
+test('product deletion frees barcode for a different uploaded product while retaining sale history',async()=>{
+  const oldProduct=product({name:'Temporary Barcode Reuse Item',pattern:'BARCODE-OLD',ean:'REUPLOAD-CODE-99',quantity:5});
+  const uploaded=await request(app).post('/api/manage/products').set(auth(admin)).send(oldProduct);
+  assert.equal(uploaded.status,201,JSON.stringify(uploaded.body));
+  const id=uploaded.body.variant_id;
+  await q('UPDATE branch_variant_stock SET reserved=1 WHERE branch_id=1 AND variant_id=$1',[id]);
+  const blocked=await request(app).delete(`/api/manage/products/${id}`).set(auth(admin)).send({branch_id:1});
+  assert.equal(blocked.status,409,JSON.stringify(blocked.body));
+  assert.equal((await q('SELECT COUNT(*)::int n FROM barcodes WHERE variant_id=$1',[id])).rows[0].n,1);
+  await q('UPDATE branch_variant_stock SET reserved=0 WHERE branch_id=1 AND variant_id=$1',[id]);
+  const deleted=await request(app).delete(`/api/manage/products/${id}`).set(auth(admin)).send({branch_id:1});
+  assert.equal(deleted.status,200,JSON.stringify(deleted.body));
+  assert.equal(deleted.body.released_barcodes,1);
+  assert.equal((await q('SELECT COUNT(*)::int n FROM barcodes WHERE variant_id=$1',[id])).rows[0].n,0);
+  assert.equal((await q('SELECT is_active FROM product_variants WHERE id=$1',[id])).rows[0].is_active,false);
+  assert.equal((await q('SELECT on_hand FROM branch_variant_stock WHERE branch_id=1 AND variant_id=$1',[id])).rows[0].on_hand,0);
+  const again=await request(app).post('/api/manage/products').set(auth(admin)).send(product({name:'Another product with reused barcode',pattern:'BARCODE-NEW',ean:'REUPLOAD-CODE-99',quantity:2}));
+  assert.equal(again.status,201,JSON.stringify(again.body));
+  assert.notEqual(again.body.variant_id,id);
+  assert.equal((await q('SELECT variant_id FROM barcodes WHERE ean_code=$1',['REUPLOAD-CODE-99'])).rows[0].variant_id,again.body.variant_id);
+});

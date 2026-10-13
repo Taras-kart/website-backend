@@ -996,39 +996,20 @@ router.put('/:id(\\d+)', async (req, res) => {
     client.release();
   }
 });
+// Legacy route must use the same transactional delete as the management portal.
 router.delete('/:id(\\d+)', async (req, res) => {
   const client = await pool.connect();
   try {
-    const variantId = parseInt(req.params.id, 10);
-    if (!Number.isFinite(variantId) || variantId <= 0) {
-      return res.status(400).json({
-        message: 'Invalid product id'
-      });
-    }
-    const existing = await client.query(`
-      SELECT id
-      FROM product_variants
-      WHERE id = $1
-      LIMIT 1
-      `, [variantId]);
-    if (!existing.rows.length) {
-      return res.status(404).json({
-        message: 'Product not found'
-      });
-    }
-    await client.query(`
-      UPDATE product_variants
-      SET is_active = FALSE
-      WHERE id = $1
-      `, [variantId]);
-    return res.json({
-      message: 'Product deleted successfully',
-      id: variantId
-    });
-  } catch (err) {
-    return res.status(500).json({
-      message: 'Error deleting product',
-      error: err.message
+    await client.query('BEGIN');
+    const { retireVariant } = require('../services/productRetirement');
+    // The access gateway restricts write access to /api/products/* to Super Admin.
+    const result = await retireVariant(client, req.params.id, { user: req.user });
+    await client.query('COMMIT');
+    return res.json(result);
+  } catch (error) {
+    await client.query('ROLLBACK');
+    return res.status(error.status || 500).json({
+      message: error.status ? error.message : 'Error deleting product'
     });
   } finally {
     client.release();

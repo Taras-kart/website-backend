@@ -1,6 +1,5 @@
 const pool = require('../db')
 const { brandSql } = require('./brands')
-const { sqlFilter } = require('./subcategories')
 const clean = value => String(value || '').trim()
 const styleSql = `tara_style_key(p.brand_name,p.name,p.pattern_code,p.gender::text,p.category_id,COALESCE(NULLIF(v.fit,''),p.fit_type,''),v.pack_size)`
 const priceSql = type => `ROUND(v.mrp::numeric * (100 - LEAST(100,GREATEST(0,COALESCE(v.${type === 'B2B' ? 'b2b' : 'b2c'}_discount_pct,0)))) / 100,2)`
@@ -21,9 +20,6 @@ function filters(query = {}, type = 'B2C') {
   if (query.categorySlug&&!params[1]) add('p.category_id IN (WITH RECURSIVE selected AS (SELECT id FROM visible_categories WHERE slug=? UNION ALL SELECT c.id FROM visible_categories c JOIN selected s ON c.parent_id=s.id) SELECT id FROM selected)',clean(query.categorySlug))
   if (query.gender) add('p.gender::text=ANY(?::text[])',values(query.gender).map(v=>v.toUpperCase()))
   if (query.brand) add(`${brandSql('p.brand_name')}=ANY(?::text[])`,values(query.brand))
-  if (query.subtype) where.push(sqlFilter(clean(query.subtype)))
-  if (query.colour) add('lower(trim(v.colour))=ANY(?::text[])',values(query.colour).map(v=>v.toLowerCase()))
-  if (query.size) add('upper(trim(v.size))=ANY(?::text[])',values(query.size).map(v=>v.toUpperCase()))
   if (query.category && !params[1]) add('lower(pc.name)=lower(?)', clean(query.category))
   for (const word of clean(query.q).split(/\s+/).filter(Boolean).slice(0,8)) add(`concat_ws(' ',p.name,${brandSql('p.brand_name')},pc.name,p.pattern_code,v.colour,p.gender) ILIKE ?`, `%${word.replace(/[\\%_]/g, '\\$&')}%`)
   if (query.min !== undefined && clean(query.min)) add(`${sellingSql(type)}>=?::numeric`, Math.max(0,Number(query.min)||0))

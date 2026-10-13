@@ -2,7 +2,6 @@ const express = require('express')
 const pool = require('../db')
 const { brands, brandSql } = require('../utils/brands')
 const { styleSql, sellingSql, availableSql, joins, activeSql, categoryCte, filters, hydrate, branchId, hasImageSql } = require('../utils/catalogue')
-const { definitions: subtypeDefinitions, matches: matchesSubtype } = require('../utils/subcategories')
 const router = express.Router()
 const wrap = fn => (req,res,next) => Promise.resolve(fn(req,res)).catch(next)
 const cache = res => { res.removeHeader('Pragma');res.removeHeader('Expires');return res.set('Cache-Control','public, max-age=15, s-maxage=30, stale-while-revalidate=30') }
@@ -20,32 +19,6 @@ router.get('/catalogue',wrap(async(req,res) => {
   if (!grouped.length && offset) total = Number((await pool.query(`${categoryCte} SELECT COUNT(DISTINCT ${styleSql})::int total ${joins} WHERE ${where}`,params)).rows[0].total)
   cache(res).json({products:rows,total,offset,limit,hasMore:offset+rows.length<total})
 }))
-
-// Dynamic leaf-category subcategories. Results are scoped to the selected
-// brand/category and count distinct styles, not individual size/colour rows.
-router.get('/subcategories',wrap(async(req,res) => {
-  const categoryId = Number(req.query.categoryId)
-  if (!Number.isSafeInteger(categoryId) || categoryId <= 0 || !String(req.query.brand||'').trim()) {
-    return res.status(400).json({message:'Brand and categoryId are required'})
-  }
-  const {params,where} = filters({brand:req.query.brand,categoryId,gender:req.query.gender})
-  const result = await pool.query(`${categoryCte} SELECT DISTINCT ON (${styleSql}) ${styleSql} style_key,v.id variant_id,p.name,p.pattern_code,p.fit_type,v.fit ${joins} WHERE ${where} ORDER BY ${styleSql},v.id`,params)
-  const groups = new Map(subtypeDefinitions.map(item=>[item.slug,{slug:item.slug,label:item.label,count:0,variant_id:null}]))
-  groups.set('other',{slug:'other',label:'Other styles',count:0,variant_id:null})
-  for (const row of result.rows) {
-    const slugs = subtypeDefinitions.filter(item=>matchesSubtype(row,item.slug)).map(item=>item.slug)
-    for (const slug of slugs.length ? slugs : ['other']) {
-      const group=groups.get(slug)
-      group.count++
-      if (!group.variant_id) group.variant_id=row.variant_id
-    }
-  }
-  const available=[...groups.values()].filter(group=>group.count>0)
-  const pictured=await hydrate([...new Set(available.map(group=>group.variant_id))])
-  const images=new Map(pictured.map(row=>[Number(row.variant_id),row.image_url||(row.image_candidates||[])[0]||null]))
-  cache(res).json({categoryId, total:result.rows.length,subcategories:available.map(({variant_id,...group})=>({...group,representative_image:images.get(Number(variant_id))||null}))})
-}))
-
 router.get('/facets',wrap(async(req,res) => {
   const {params,where} = filters({gender:req.query.gender,brand:req.query.brand})
   const includeImages=req.query.images!=='false'
@@ -59,10 +32,7 @@ router.get('/facets',wrap(async(req,res) => {
   })
   const bp = filters({gender:req.query.gender})
   const counts = (await pool.query(`${categoryCte} SELECT ${brandSql('p.brand_name')} name,COUNT(DISTINCT ${styleSql})::int count ${joins} WHERE ${bp.where} GROUP BY 1`,bp.params)).rows
-  const attributeFilters=filters({gender:req.query.gender,brand:req.query.brand,categoryId:req.query.categoryId,subtype:req.query.subtype})
-  const attributeRows=(await pool.query(`${categoryCte} SELECT TRIM(v.colour) colour,TRIM(v.size) size,${styleSql} style_key ${joins} WHERE ${attributeFilters.where}`,attributeFilters.params)).rows
-  const countsFor=key=>{const counts=new Map();for(const item of attributeRows){const value=String(item[key]||'').trim();if(!value)continue;const normalized=value.toLowerCase();if(!counts.has(normalized))counts.set(normalized,{name:value,styles:new Set()});counts.get(normalized).styles.add(item.style_key)}return [...counts.values()].map(item=>({name:item.name,count:item.styles.size})).sort((a,b)=>a.name.localeCompare(b.name))}
-  cache(res).json({colours:countsFor('colour'),sizes:countsFor('size'),brands:[...brands.map(([name])=>({name,count:counts.find(b=>b.name===name)?.count||0})),{name:'Fashion',count:counts.find(b=>b.name==='Fashion')?.count||0}],categories})
+  cache(res).json({brands:[...brands.map(([name])=>({name,count:counts.find(b=>b.name===name)?.count||0})),{name:'Fashion',count:counts.find(b=>b.name==='Fashion')?.count||0}],categories})
 }))
 router.get('/:id(\\d+)/family',wrap(async(req,res) => {
   const id = Number(req.params.id)
