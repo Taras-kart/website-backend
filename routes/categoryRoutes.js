@@ -20,6 +20,14 @@ const slugify = value => clean(value)
   .replace(/^-+|-+$/g, '')
 
 const requireAdminAuth = require('../middleware/auth').requireAuth
+// Category changes are restricted at the API boundary, not just hidden in the UI.
+function requireBranchCategoryAdmin(req, res, next) {
+  const role = req.user?.role || req.user?.role_enum
+  if (role === 'SUPER_ADMIN' || !req.user?.branch_id || !['ADMIN', 'BRANCH_ADMIN'].includes(role) && !/^BRANCH\d+$/.test(role || '')) {
+    return res.status(403).json({ message: 'Only an assigned branch admin can manage categories' })
+  }
+  return next()
+}
 
 async function uniqueSlug(db, gender, name, excludedId = null) {
   const base = slugify(`${gender}-${name}`) || `category-${Date.now()}`
@@ -193,7 +201,7 @@ router.get('/:id/impact', requireAdminAuth, async (req, res) => {
   }
 })
 
-router.post('/', requireAdminAuth, async (req, res) => {
+router.post('/', requireAdminAuth, requireBranchCategoryAdmin, async (req, res) => {
   const name = clean(req.body?.name)
   const parentId = positiveInteger(req.body?.parent_id)
   const requestedSortOrder = req.body?.sort_order
@@ -255,7 +263,7 @@ router.post('/', requireAdminAuth, async (req, res) => {
   }
 })
 
-router.put('/:id', requireAdminAuth, async (req, res) => {
+router.put('/:id', requireAdminAuth, requireBranchCategoryAdmin, async (req, res) => {
   const categoryId = positiveInteger(req.params.id)
   const name = clean(req.body?.name)
   const sortOrder = Number.parseInt(String(req.body?.sort_order ?? ''), 10)
@@ -312,7 +320,7 @@ router.put('/:id', requireAdminAuth, async (req, res) => {
   }
 })
 
-router.patch('/:id/status', requireAdminAuth, async (req, res) => {
+router.patch('/:id/status', requireAdminAuth, requireBranchCategoryAdmin, async (req, res) => {
   const categoryId = positiveInteger(req.params.id)
   const isActive = req.body?.is_active === true
   const cascade = req.body?.cascade === true

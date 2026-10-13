@@ -11,7 +11,7 @@ router.use(async(req,res,next)=>{
   requireAuth(req,res,async error=>{
     if(error) return next(error)
     try{
-      const global=globalPrefixes.some(prefix=>p.startsWith(prefix)) || (write&&p.startsWith('/categories')) || (write&&p.startsWith('/homepage-images')) || (write&&p.startsWith('/products/')) || p==='/sales/web' || (req.method==='GET'&&['/b2c-customers','/b2b-customers'].includes(p)) || (write&&p==='/b2b-customers')
+      const global=globalPrefixes.some(prefix=>p.startsWith(prefix)) || (write&&p.startsWith('/homepage-images')) || (write&&p.startsWith('/products/')) || p==='/sales/web' || (req.method==='GET'&&['/b2c-customers','/b2b-customers'].includes(p)) || (write&&p==='/b2b-customers')
       if(global&&req.user.role!=='SUPER_ADMIN') return res.status(403).json({message:'Super admin access required'})
       if(/^\/(inventory|sales\/confirm|branch)/.test(p)){
         const match=p.match(/^\/branch\/(\d+)/)

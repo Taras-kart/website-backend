@@ -78,12 +78,31 @@ router.delete('/admins/:id',requireSuperAdmin,wrap(async(req,res)=>{
 }))
 router.get('/stock',wrap(async(req,res)=>{
   const branch=scopeBranch(req,false),{limit,offset}=page(req)
-  const params=[branch,`%${clean(req.query.q)}%`,req.query.low==='true',limit,offset]
-  const where=`v.is_active=TRUE AND p.is_active=TRUE AND ($1::bigint IS NULL OR s.branch_id=$1) AND (concat_ws(' ',p.name,p.brand_name,v.size,v.colour,bc.ean_code) ILIKE $2) AND (NOT $3::boolean OR s.on_hand-s.reserved<=5)`
+  const gender=['MEN','WOMEN','KIDS'].includes(clean(req.query.gender).toUpperCase()) ? clean(req.query.gender).toUpperCase() : null
+  const category=String(req.query.category_id || '').trim()
+  if(category && (!Number.isSafeInteger(Number(category)) || Number(category)<1)) fail('Select a valid category')
+  const state=['low','out','in','high'].includes(clean(req.query.stock_state)) ? clean(req.query.stock_state) : null
+  const sort={recent:'v.id DESC',name:'p.name ASC,v.id DESC',stock_asc:'available ASC,v.id DESC',stock_desc:'available DESC,v.id DESC',price_asc:'v.mrp ASC,v.id DESC',price_desc:'v.mrp DESC,v.id DESC'}[clean(req.query.sort)]||'v.id DESC'
+  const params=[branch,`%${clean(req.query.q)}%`,req.query.low==='true',gender,category?Number(category):null,state]
   const from=`FROM branch_variant_stock s JOIN branches b ON b.id=s.branch_id JOIN product_variants v ON v.id=s.variant_id JOIN products p ON p.id=v.product_id LEFT JOIN product_categories c ON c.id=p.category_id LEFT JOIN LATERAL (SELECT ean_code FROM barcodes WHERE variant_id=v.id ORDER BY id LIMIT 1) bc ON TRUE`
-  const rows=(await pool.query(`SELECT s.branch_id,b.name branch_name,v.id variant_id,p.id product_id,p.name,p.brand_name,p.gender,p.category_id,c.name category_name,p.pattern_code,v.size,v.colour,v.fit,v.pack_size,v.mrp,v.sale_price,v.b2c_discount_pct,v.b2b_discount_pct,v.image_url,bc.ean_code,s.on_hand,s.reserved,GREATEST(s.on_hand-s.reserved,0) available,s.is_active ${from} WHERE ${where} ORDER BY b.name,p.name,v.colour,v.size,v.id LIMIT $4 OFFSET $5`,params)).rows
-  const total=(await pool.query(`SELECT COUNT(*)::int total ${from} WHERE ${where}`,params.slice(0,3))).rows[0].total
-  res.json({rows,total,limit,offset})
+  const where=`v.is_active=TRUE AND p.is_active=TRUE AND ($1::bigint IS NULL OR s.branch_id=$1)
+    AND concat_ws(' ',p.name,p.brand_name,p.pattern_code,v.size,v.colour,bc.ean_code,c.name) ILIKE $2
+    AND (NOT $3::boolean OR s.on_hand-s.reserved<=5)
+    AND ($4::text IS NULL OR p.gender::text=$4)
+    AND ($5::bigint IS NULL OR p.category_id=$5)
+    AND ($6::text IS NULL OR ($6='low' AND s.on_hand-s.reserved BETWEEN 1 AND 5)
+      OR ($6='out' AND s.on_hand-s.reserved<=0)
+      OR ($6='in' AND s.on_hand-s.reserved>0)
+      OR ($6='high' AND s.on_hand-s.reserved>=100))`
+  const rows=(await pool.query(`SELECT s.branch_id,b.name branch_name,v.id variant_id,p.id product_id,p.name,p.brand_name,p.gender,p.category_id,c.name category_name,p.pattern_code,v.size,v.colour,v.fit,v.pack_size,v.mrp,v.sale_price,v.b2c_discount_pct,v.b2b_discount_pct,v.image_url,bc.ean_code,s.on_hand,s.reserved,GREATEST(s.on_hand-s.reserved,0) available,s.is_active ${from} WHERE ${where} ORDER BY ${sort} LIMIT $7 OFFSET $8`,[...params,limit,offset])).rows
+  const total=(await pool.query(`SELECT COUNT(*)::int total ${from} WHERE ${where}`,params)).rows[0].total
+  const summary=(await pool.query(`SELECT COUNT(*)::int sku_count,
+    COALESCE(SUM(s.on_hand),0)::int total_units,
+    COUNT(*) FILTER (WHERE s.on_hand-s.reserved BETWEEN 1 AND 5)::int low_stock,
+    COUNT(*) FILTER (WHERE s.on_hand-s.reserved<=0)::int out_of_stock,
+    COUNT(*) FILTER (WHERE s.on_hand-s.reserved>=100)::int high_stock
+    ${from} WHERE ${where}`,params)).rows[0]
+  res.json({rows,total,summary,limit,offset})
 }))
 router.post('/products',wrap(async(req,res)=>{
   const branch=scopeBranch(req)
@@ -138,11 +157,29 @@ function dateRange(req){
   return [start?`${start}T00:00:00+05:30`:null,end?`${end}T23:59:59.999+05:30`:null]
 }
 router.get('/sales',wrap(async(req,res)=>{
-  const {limit,offset}=page(req),params=[scopeBranch(req,false),...dateRange(req),`%${clean(req.query.q)}%`]
-  const where=`($1::bigint IS NULL OR s.branch_id=$1) AND ($2::timestamptz IS NULL OR s.created_at>=$2) AND ($3::timestamptz IS NULL OR s.created_at<=$3) AND concat_ws(' ',s.id,s.customer_name,s.customer_email,s.source,s.status,s.payment_status) ILIKE $4`
-  const rows=(await pool.query(`SELECT s.*,b.name branch_name FROM sales s LEFT JOIN branches b ON b.id=s.branch_id WHERE ${where} ORDER BY s.created_at DESC,s.id LIMIT $5 OFFSET $6`,[...params,limit,offset])).rows
+  const {limit,offset}=page(req)
+  const allowedStatus=['PLACED','CONFIRMED','PROCESSING','SHIPPED','DELIVERED','CANCELLED','RETURNED','FAILED']
+  const allowedPayment=['PAID','COD','PENDING','FAILED','REFUNDED']
+  const status=clean(req.query.status).toUpperCase()
+  const payment=clean(req.query.payment).toUpperCase()
+  const source=clean(req.query.source).toUpperCase()
+  const params=[scopeBranch(req,false),...dateRange(req),`%${clean(req.query.q)}%`,allowedStatus.includes(status)?status:null,allowedPayment.includes(payment)?payment:null,source && source!=='ALL'?source:null]
+  const where=`($1::bigint IS NULL OR s.branch_id=$1) AND ($2::timestamptz IS NULL OR s.created_at>=$2)
+    AND ($3::timestamptz IS NULL OR s.created_at<=$3)
+    AND concat_ws(' ',s.id,s.customer_name,s.customer_email,s.source,s.status,s.payment_status) ILIKE $4
+    AND ($5::text IS NULL OR s.status::text=$5) AND ($6::text IS NULL OR s.payment_status::text=$6)
+    AND ($7::text IS NULL OR s.source::text=$7)`
+  const rows=(await pool.query(`SELECT s.*,b.name branch_name FROM sales s LEFT JOIN branches b ON b.id=s.branch_id WHERE ${where} ORDER BY s.created_at DESC,s.id LIMIT $8 OFFSET $9`,[...params,limit,offset])).rows
   const total=(await pool.query(`SELECT COUNT(*)::int total FROM sales s WHERE ${where}`,params)).rows[0].total
-  res.json({rows,total,limit,offset})
+  const summary=(await pool.query(`SELECT COUNT(*)::int total_orders,
+    COUNT(*) FILTER (WHERE s.status::text='PLACED')::int placed,
+    COUNT(*) FILTER (WHERE s.status::text='CONFIRMED')::int confirmed,
+    COUNT(*) FILTER (WHERE s.status::text='SHIPPED')::int shipped,
+    COUNT(*) FILTER (WHERE s.status::text='DELIVERED')::int delivered,
+    COUNT(*) FILTER (WHERE s.status::text='CANCELLED')::int cancelled,
+    COALESCE(SUM(s.total),0) total_amount
+    FROM sales s WHERE ${where}`,params)).rows[0]
+  res.json({rows,total,summary,limit,offset})
 }))
 router.patch('/sales/:id/status',wrap(async(req,res)=>{
   const status=clean(req.body.status).toUpperCase()
@@ -180,9 +217,75 @@ router.get('/dashboard',wrap(async(req,res)=>{
   const daily=(await pool.query(`SELECT (created_at AT TIME ZONE 'Asia/Kolkata')::date AS day,COUNT(*)::int orders,COALESCE(SUM(total) FILTER(WHERE status::text NOT IN ('CANCELLED','FAILED') AND (payment_status::text='PAID' OR (payment_status::text='COD' AND status::text='DELIVERED'))),0) revenue FROM sales WHERE ($1::bigint IS NULL OR branch_id=$1) AND created_at>=COALESCE($2::timestamptz,now()-interval '30 days') AND ($3::timestamptz IS NULL OR created_at<=$3) GROUP BY 1 ORDER BY 1`,params)).rows
   res.json({sales,stocks,branches,daily})
 }))
+// Payment transactions. Customer payment is separate from bank settlement.
+// No bank-received figure is computed without a reconciliation/settlement source.
+// Branch-scoped customer directory derived from that branch's own orders.
+// This does not expose global customer accounts to branch administrators.
+router.get('/customers',wrap(async(req,res)=>{
+  const {limit,offset}=page(req)
+  const branch=scopeBranch(req,false)
+  const q=`%${clean(req.query.q)}%`
+  const minOrders=Number(req.query.min_orders||1)
+  if(!Number.isSafeInteger(minOrders)||minOrders<1||minOrders>10000) fail('Select a valid minimum order count')
+  const sort={recent:'last_order DESC',orders:'order_count DESC,last_order DESC',spent:'revenue DESC,last_order DESC',name:'customer_name ASC,last_order DESC'}[clean(req.query.sort)]||'last_order DESC'
+  const params=[branch,q,minOrders]
+  const base=`FROM sales s WHERE ($1::bigint IS NULL OR s.branch_id=$1) AND
+     concat_ws(' ',s.customer_name,s.customer_email,s.customer_mobile) ILIKE $2
+     GROUP BY COALESCE(NULLIF(LOWER(TRIM(s.customer_email)),''),NULLIF(REGEXP_REPLACE(s.customer_mobile,'[^0-9]','','g'),''),s.id::text)
+     HAVING COUNT(*) >= $3::int`
+  const select=`SELECT MAX(s.customer_name) customer_name, MAX(s.customer_email) customer_email,
+    MAX(s.customer_mobile) customer_mobile, COUNT(*)::int order_count,
+    COALESCE(SUM(s.total) FILTER(WHERE s.payment_status::text='PAID' OR (s.payment_status::text='COD' AND s.status::text='DELIVERED')),0) revenue,
+    MAX(s.created_at) last_order `
+  const rows=(await pool.query(`${select} ${base} ORDER BY ${sort} LIMIT $4 OFFSET $5`,[...params,limit,offset])).rows
+  const total=(await pool.query(`SELECT COUNT(*)::int total FROM (${select} ${base}) selected`,params)).rows[0].total
+  res.json({rows,total,limit,offset})
+}))
+router.get('/transactions',wrap(async(req,res)=>{
+  const {limit,offset}=page(req)
+  const allowedStatus=['PLACED','CONFIRMED','PROCESSING','SHIPPED','DELIVERED','CANCELLED','RETURNED','FAILED']
+  const status=clean(req.query.status).toUpperCase()
+  const type=clean(req.query.payment_type).toUpperCase()
+  const customer=clean(req.query.customer_payment).toUpperCase()
+  const source=clean(req.query.source).toUpperCase()
+  const branch=scopeBranch(req,false)
+  const params=[branch,...dateRange(req),`%${clean(req.query.q)}%`,
+    allowedStatus.includes(status)?status:null,
+    ['COD','PREPAID'].includes(type)?type:null,
+    ['PAID','PENDING'].includes(customer)?customer:null,
+    ['WEB','POS','B2B'].includes(source)?source:null,
+    clean(req.query.email).toLowerCase() || null,
+    clean(req.query.mobile).replace(/\D/g,'') || null]
+  const kind="CASE WHEN s.payment_status::text='COD' OR UPPER(COALESCE(s.payment_method,''))='COD' THEN 'COD' ELSE 'PREPAID' END"
+  const where=`($1::bigint IS NULL OR s.branch_id=$1)
+    AND ($2::timestamptz IS NULL OR s.created_at>=$2)
+    AND ($3::timestamptz IS NULL OR s.created_at<=$3)
+    AND concat_ws(' ',s.id,s.customer_name,s.customer_email,s.customer_mobile,s.payment_ref,s.source,s.status) ILIKE $4
+    AND ($5::text IS NULL OR s.status::text=$5)
+    AND ($6::text IS NULL OR ${kind}=$6)
+    AND ($7::text IS NULL OR ($7='PAID' AND s.payment_status::text='PAID') OR ($7='PENDING' AND s.payment_status::text IN ('COD','PENDING')))
+    AND ($8::text IS NULL OR s.source::text=$8)
+    AND ($9::text IS NULL OR LOWER(COALESCE(s.customer_email,''))=$9)
+    AND ($10::text IS NULL OR regexp_replace(COALESCE(s.customer_mobile,''),'\\D','','g')=$10)`
+  const totals=(await pool.query(`SELECT COUNT(*)::int total,
+    COUNT(*) FILTER(WHERE ${kind}='COD')::int cod,
+    COUNT(*) FILTER(WHERE ${kind}='PREPAID')::int prepaid,
+    COUNT(*) FILTER(WHERE s.payment_status::text='PAID')::int customer_paid,
+    COUNT(*) FILTER(WHERE s.payment_status::text IN ('COD','PENDING'))::int customer_pending,
+    COUNT(*) FILTER(WHERE s.status::text='CANCELLED')::int cancelled,
+    COALESCE(SUM(s.total),0) total_amount,
+    COALESCE(SUM(s.total) FILTER(WHERE s.payment_status::text='PAID'),0) customer_paid_amount
+    FROM sales s WHERE ${where}`,params)).rows[0]
+  const rows=(await pool.query(`SELECT s.id,s.created_at,s.customer_name,s.customer_email,s.customer_mobile,s.source,s.status,
+    s.payment_method,s.payment_status,s.payment_ref,s.total,s.branch_id,b.name branch_name, ${kind} AS payment_type
+    FROM sales s LEFT JOIN branches b ON b.id=s.branch_id WHERE ${where}
+    ORDER BY s.created_at DESC,s.id DESC LIMIT $11 OFFSET $12`,[...params,limit,offset])).rows
+  res.json({rows,total:totals.total,summary:totals,limit,offset,bank_settlement_tracked:false})
+}))
 router.get('/movements',wrap(async(req,res)=>{
   const {limit,offset}=page(req)
-  res.json((await pool.query(`SELECT m.*,p.name product_name,v.size,v.colour,b.name branch_name FROM tara_stock_movements m JOIN product_variants v ON v.id=m.variant_id JOIN products p ON p.id=v.product_id JOIN branches b ON b.id=m.branch_id WHERE ($1::bigint IS NULL OR m.branch_id=$1) ORDER BY m.id DESC LIMIT $2 OFFSET $3`,[scopeBranch(req,false),limit,offset])).rows)
+  const direction=['increase','decrease'].includes(clean(req.query.direction))?clean(req.query.direction):null
+  res.json((await pool.query(`SELECT m.*,p.name product_name,v.size,v.colour,b.name branch_name FROM tara_stock_movements m JOIN product_variants v ON v.id=m.variant_id JOIN products p ON p.id=v.product_id JOIN branches b ON b.id=m.branch_id WHERE ($1::bigint IS NULL OR m.branch_id=$1) AND ($2::text IS NULL OR ($2='increase' AND m.delta>0) OR ($2='decrease' AND m.delta<0)) AND concat_ws(' ',p.name,v.colour,v.size,m.reason,m.reference) ILIKE $3 ORDER BY m.id DESC LIMIT $4 OFFSET $5`,[scopeBranch(req,false),direction,`%${clean(req.query.q)}%`,limit,offset])).rows)
 }))
 router.get('/audit',requireSuperAdmin,wrap(async(req,res)=>res.json((await pool.query('SELECT a.*,u.username FROM tara_audit_log a LEFT JOIN users u ON u.id=a.user_id ORDER BY a.id DESC LIMIT 200')).rows)))
 router.get('/products/:id',wrap(async(req,res)=>{
