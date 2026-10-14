@@ -8,6 +8,15 @@ const sellingSql = type => `CASE WHEN COALESCE(v.${type === 'B2B' ? 'b2b' : 'b2c
 const stockJoin = `LEFT JOIN LATERAL (SELECT SUM(s.on_hand)::int on_hand,SUM(s.reserved)::int reserved FROM branch_variant_stock s JOIN branches b ON b.id=s.branch_id WHERE s.variant_id=v.id AND s.is_active=TRUE AND b.is_active=TRUE AND ($1::int IS NULL OR s.branch_id=$1)) stock ON TRUE`
 const joins = `FROM products p JOIN product_variants v ON v.product_id=p.id LEFT JOIN product_categories pc ON pc.id=p.category_id ${stockJoin}`
 const availableSql = `GREATEST(COALESCE(stock.on_hand,0)-COALESCE(stock.reserved,0),0)`
+// Legacy products may still be assigned to their parent category. Resolve the
+// nearest matching *admin-managed* child for storefront display only. The
+// underlying product/category IDs are never silently rewritten by a GET.
+const normSql = expression => `(' ' || BTRIM(regexp_replace(lower(COALESCE(${expression},'')), '[^a-z0-9]+', ' ', 'g')) || ' ')`
+const effectiveCategorySql = `COALESCE((SELECT child.id FROM visible_categories child
+  WHERE child.parent_id=p.category_id AND length(BTRIM(child.name))>=3
+    AND position(${normSql('child.name')} IN ${normSql("concat_ws(' ',p.name,p.fit_type,v.fit)")})>0
+  ORDER BY length(child.name) DESC,child.sort_order,child.id LIMIT 1),p.category_id)`
+
 const activeSql = `p.is_active=TRUE AND v.is_active=TRUE AND (p.category_id IS NULL OR p.category_id IN (SELECT id FROM visible_categories))`
 const categoryCte = `WITH RECURSIVE visible_categories AS (SELECT id,parent_id,name,slug,gender,level,sort_order FROM product_categories WHERE parent_id IS NULL AND is_active=TRUE UNION ALL SELECT c.id,c.parent_id,c.name,c.slug,c.gender,c.level,c.sort_order FROM product_categories c JOIN visible_categories a ON c.parent_id=a.id WHERE c.is_active=TRUE), descendants AS (SELECT id FROM visible_categories WHERE id=ANY($2::int[]) UNION ALL SELECT c.id FROM visible_categories c JOIN descendants d ON c.parent_id=d.id)`
 const branchId = () => Number(process.env.WEB_BRANCH_ID) || null
@@ -17,7 +26,7 @@ function filters(query = {}, type = 'B2C') {
   const params = [branchId(), categoryIds.length?categoryIds:null]
   const where = [activeSql]
   const add = (sql, value) => { params.push(value); where.push(sql.replaceAll('?', `$${params.length}`)) }
-  if (params[1]) where.push('p.category_id IN (SELECT id FROM descendants)')
+  if (params[1]) where.push(`${effectiveCategorySql} IN (SELECT id FROM descendants)`)
   if (query.categorySlug&&!params[1]) add('p.category_id IN (WITH RECURSIVE selected AS (SELECT id FROM visible_categories WHERE slug=? UNION ALL SELECT c.id FROM visible_categories c JOIN selected s ON c.parent_id=s.id) SELECT id FROM selected)',clean(query.categorySlug))
   if (query.gender) add('p.gender::text=ANY(?::text[])',values(query.gender).map(v=>v.toUpperCase()))
   if (query.brand) add(`${brandSql('p.brand_name')}=ANY(?::text[])`,values(query.brand))
@@ -59,4 +68,4 @@ async function hydrate(ids, db = pool, branch = branchId()) {
   WHERE v.id=ANY($2::int[])`,[branch,ids,cloud])
   return result.rows
 }
-module.exports = { styleSql, sellingSql, availableSql, joins, activeSql, categoryCte, filters, hydrate, branchId, hasImageSql }
+module.exports = { styleSql, sellingSql, availableSql, joins, activeSql, categoryCte, filters, hydrate, branchId, hasImageSql, effectiveCategorySql }

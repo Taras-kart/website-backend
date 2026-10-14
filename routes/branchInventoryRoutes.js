@@ -394,7 +394,19 @@ router.post('/:branchId/import', requireBranchAuth, upload.single('file'), async
     }
     const hash=crypto.createHash('sha256').update(req.file.buffer).digest('hex');
     const duplicate=await client.query('SELECT * FROM import_jobs WHERE branch_id=$1 AND category_id=$2 AND file_hash=$3',[branchId,categoryId,hash]);
-    if(duplicate.rows.length) return res.json({...duplicate.rows[0],reused:true});
+    if (duplicate.rows.length) {
+      const existing=duplicate.rows[0];
+      // A previous all-error import can be retried after a deployment fix;
+      // a completed or partly successful import is never silently repeated.
+      if (existing.status_enum==='FAILED' && Number(existing.rows_success||0)===0) {
+        await client.query('BEGIN');
+        await client.query(`UPDATE import_rows SET status_enum=$2,error_msg=NULL,processed_at=NULL WHERE import_job_id=$1 AND status_enum=$3`,[existing.id,createdStatus,'ERROR']);
+        await client.query(`UPDATE import_jobs SET status_enum='PENDING',rows_error=0,completed_at=NULL WHERE id=$1`,[existing.id]);
+        await client.query('COMMIT');
+        return res.json({...existing,status_enum:'PENDING',rows_error:0,reused:true,retried:true});
+      }
+      return res.json({...existing,reused:true,alreadyProcessed:['COMPLETE','PARTIAL'].includes(String(existing.status_enum))});
+    }
     const ext = (req.file.originalname.split('.').pop() || 'xlsx').toLowerCase();
     const name = `${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
     const stored = {url:''};
@@ -442,7 +454,7 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
         message: `Unsupported import_row_status enum values: ${enumValues.join(', ')}`
       });
     }
-    const j = await pool.query(`SELECT id, file_url, status_enum, rows_total, rows_success, rows_error, gender, category_id
+    const j = await pool.query(`SELECT id, file_url, file_hash, status_enum, rows_total, rows_success, rows_error, gender, category_id
        FROM import_jobs
        WHERE id = $1 AND branch_id = $2`, [jobId, branchId]);
     if (!j.rows.length) return res.status(404).json({
@@ -459,6 +471,14 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
     if (categoryCheck.error) return res.status(400).json({
       message: categoryCheck.error
     });
+    // This is a recategorization (not stock receipt) only for an exact file
+    // that was previously completed in the target category's direct parent.
+    const previous = job.file_hash ? await pool.query(`SELECT 1 FROM import_jobs j
+      JOIN product_categories target ON target.id=$3
+      WHERE j.branch_id=$1 AND j.file_hash=$2 AND j.id<>$4
+      AND j.category_id=target.parent_id AND j.status_enum='COMPLETE'
+      LIMIT 1`,[branchId,job.file_hash,categoryId,jobId]) : {rows:[]};
+    const reclassifyOnly=previous.rows.length>0;
     if (st === 'COMPLETE' || st === 'PARTIAL' || st === 'FAILED') {
       return res.json({
         done: true,
@@ -520,7 +540,7 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
         }
         try {
           await client.query('BEGIN');
-          await saveVariant(client,{name:prepared.ProductName,brand:prepared.BrandName,size:prepared.SIZE,colour:prepared.COLOUR,pattern:prepared.PATTERN,fit:prepared.FITT,ean:prepared.EANCode,gender,category_id:categoryId,mrp:prepared.MRP,sale_price:prepared.RSalePrice,cost_price:prepared.CostPrice,b2c_discount_pct:prepared.B2CDiscount,b2b_discount_pct:prepared.B2BDiscount,quantity:prepared.PurchaseQty,pack_size:prepared.PackSize},branchId,req.user,{reference:`IMPORT:${jobId}:${batchRow.id}`});
+          await saveVariant(client,{name:prepared.ProductName,brand:prepared.BrandName,size:prepared.SIZE,colour:prepared.COLOUR,pattern:prepared.PATTERN,fit:prepared.FITT,ean:prepared.EANCode,gender,category_id:categoryId,mrp:prepared.MRP,sale_price:prepared.RSalePrice,cost_price:prepared.CostPrice,b2c_discount_pct:prepared.B2CDiscount,b2b_discount_pct:prepared.B2BDiscount,quantity:prepared.PurchaseQty,pack_size:prepared.PackSize},branchId,req.user,{reference:`IMPORT:${jobId}:${batchRow.id}`,reclassifyOnly});
           await client.query(`UPDATE import_rows
              SET status_enum = $2,
                  error_msg = NULL,
@@ -589,7 +609,8 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
       totalRows: job.rows_total || 0,
       nextStart: processedCount,
       error_counts,
-      errors_sample: errSamples
+      errors_sample: errSamples,
+      mode: reclassifyOnly ? 'RECLASSIFY_EXISTING' : 'RECEIVE_STOCK'
     });
   } catch (e) {
     res.status(500).json({

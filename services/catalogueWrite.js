@@ -24,7 +24,7 @@ function validateVariant(body) {
   if (row.image_url&&!/^https:\/\//i.test(row.image_url)&&!/^\/images\//.test(row.image_url)) fail('Image URL must use HTTPS or start with /images/')
   return row
 }
-async function saveVariant(db,input,branchId,user,{reference='MANUAL'}={}) {
+async function saveVariant(db,input,branchId,user,{reference='MANUAL',reclassifyOnly=false}={}) {
   const row=validateVariant(input)
   const category=await db.query('SELECT id,parent_id,gender,is_active FROM product_categories WHERE id=$1',[row.category_id])
   if (!category.rows[0]?.is_active||!category.rows[0]?.parent_id||category.rows[0].gender!==row.gender) fail('Select an active category within the selected gender')
@@ -33,7 +33,17 @@ async function saveVariant(db,input,branchId,user,{reference='MANUAL'}={}) {
   const identity=[row.brand.toLowerCase(),row.name.toLowerCase(),row.pattern.toLowerCase(),row.gender,row.category_id].join('|')
   await db.query('SELECT pg_advisory_xact_lock(hashtext($1))',[identity])
   let product=(await db.query(`SELECT id,category_id FROM products WHERE lower(trim(name))=lower($1) AND lower(trim(brand_name))=lower($2) AND lower(trim(COALESCE(pattern_code,'')))=lower($3) AND gender::text=$4 ORDER BY id LIMIT 1 FOR UPDATE`,[row.name,row.brand,row.pattern,row.gender])).rows[0]
-  if (product&&Number(product.category_id)!==row.category_id) fail('This style already belongs to another category. Use a different style code or ask a super admin to correct its category.')
+  if (product&&Number(product.category_id)!==row.category_id) {
+    if (!reclassifyOnly) fail('This style already belongs to another category. Re-upload the original completed Excel to its matching child category, or ask an administrator to review it.')
+    const parentCheck=await db.query(`SELECT c.name FROM product_categories c WHERE c.id=$1 AND c.parent_id=$2 AND c.is_active=TRUE`,[row.category_id,product.category_id])
+    if (!parentCheck.rows.length) fail('Only direct parent-to-child category reclassification is supported')
+    const childName=String(parentCheck.rows[0].name||'').trim().toLowerCase()
+    const text=[row.name,row.fit].join(' ').toLowerCase().replace(/[^a-z0-9]+/g,' ')
+    if (!childName||!(' '+text+' ').includes(' '+childName.replace(/[^a-z0-9]+/g,' ')+' ')) fail('Product name or fit does not match the selected child category')
+    const anotherBranch=await db.query(`SELECT 1 FROM product_variants pv JOIN branch_variant_stock s ON s.variant_id=pv.id WHERE pv.product_id=$1 AND s.branch_id<>$2 AND s.is_active=TRUE LIMIT 1`,[product.id,branchId])
+    if (anotherBranch.rows.length) fail('Cannot reclassify shared-branch products automatically; contact a super admin')
+    await db.query('UPDATE products SET category_id=$1,updated_at=NOW() WHERE id=$2',[row.category_id,product.id])
+  }
   if (!product) product=(await db.query(`INSERT INTO products(name,brand_name,pattern_code,fit_type,gender,category_id,is_active) VALUES($1,$2,$3,$4,$5,$6,TRUE) RETURNING id`,[row.name,row.brand,row.pattern,row.fit,row.gender,row.category_id])).rows[0]
   else await db.query('UPDATE products SET is_active=TRUE,deleted_at=NULL,updated_at=now() WHERE id=$1',[product.id])
   let variant=(await db.query(`SELECT * FROM product_variants WHERE product_id=$1 AND lower(trim(size))=lower($2) AND lower(trim(colour))=lower($3) AND lower(trim(COALESCE(fit,'')))=lower($4) ORDER BY id LIMIT 1 FOR UPDATE`,[product.id,row.size,row.colour,row.fit])).rows[0]
@@ -48,8 +58,10 @@ async function saveVariant(db,input,branchId,user,{reference='MANUAL'}={}) {
     const barcode=await db.query(`INSERT INTO barcodes(variant_id,ean_code) VALUES($1,$2) ON CONFLICT(ean_code) DO UPDATE SET ean_code=EXCLUDED.ean_code WHERE barcodes.variant_id=EXCLUDED.variant_id RETURNING id`,[variant.id,row.ean])
     if (!barcode.rows.length) fail('This barcode belongs to a different variant. Correct the barcode before importing.')
   }
-  const stock=(await db.query(`INSERT INTO branch_variant_stock(branch_id,variant_id,on_hand,reserved,is_active) VALUES($1,$2,$3,0,TRUE) ON CONFLICT(branch_id,variant_id) DO UPDATE SET on_hand=branch_variant_stock.on_hand+EXCLUDED.on_hand,is_active=TRUE RETURNING on_hand`,[branchId,variant.id,row.quantity])).rows[0]
-  await db.query(`INSERT INTO tara_stock_movements(branch_id,variant_id,delta,balance,reason,user_id,reference) VALUES($1,$2,$3,$4,'STOCK_RECEIVED',$5,$6)`,[branchId,variant.id,row.quantity,stock.on_hand,user.id,reference])
+  const alreadyStocked=reclassifyOnly && (await db.query(`SELECT 1 FROM branch_variant_stock WHERE branch_id=$1 AND variant_id=$2 LIMIT 1 FOR UPDATE`,[branchId,variant.id])).rows.length>0
+  const stockDelta=alreadyStocked ? 0 : row.quantity
+  const stock=(await db.query(`INSERT INTO branch_variant_stock(branch_id,variant_id,on_hand,reserved,is_active) VALUES($1,$2,$3,0,TRUE) ON CONFLICT(branch_id,variant_id) DO UPDATE SET on_hand=branch_variant_stock.on_hand+EXCLUDED.on_hand,is_active=TRUE RETURNING on_hand`,[branchId,variant.id,stockDelta])).rows[0]
+  if (stockDelta>0) await db.query(`INSERT INTO tara_stock_movements(branch_id,variant_id,delta,balance,reason,user_id,reference) VALUES($1,$2,$3,$4,'STOCK_RECEIVED',$5,$6)`,[branchId,variant.id,stockDelta,stock.on_hand,user.id,reference])
   return {variant_id:variant.id,product_id:product.id,on_hand:stock.on_hand}
 }
 module.exports={validateVariant,saveVariant,numeric,clean,fail}
