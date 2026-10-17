@@ -5,6 +5,7 @@ const {requireCustomer}=require('../middleware/customerAuth')
 const {numeric,fail}=require('../services/catalogueWrite')
 const {hydrate}=require('../utils/catalogue')
 const {deductCoinsForOrder}=require('../services/coinsService')
+const {maxCoinRedemption}=require('../coinRedemption')
 router.post('/web/place',requireCustomer,async(req,res,next)=>{
   let db
   try{
@@ -28,7 +29,7 @@ router.post('/web/place',requireCustomer,async(req,res,next)=>{
     let bagTotal=0,subtotal=0
     for(const item of products){const qty=quantities.get(Number(item.id));bagTotal+=Number(item.mrp)*qty;subtotal+=Number(item.final_price_b2c)*qty}
     if(products.length!==ids.length)fail('One of the selected products is unavailable')
-    if(coins){const settings=Object.fromEntries((await db.query('SELECT key,value FROM coin_settings')).rows.map(r=>[r.key,r.value]));if(settings.coins_enabled!=='true')fail('Coins are currently unavailable');if(coins>Math.floor(subtotal*.1))fail('Coins can cover up to 10% of the item subtotal');const wallet=(await db.query('SELECT * FROM coin_wallets WHERE user_id=$1 FOR UPDATE',[req.customer.id])).rows[0];if(!wallet||Number(wallet.balance)<coins)fail('Insufficient coins')}
+    if(coins){const settings=Object.fromEntries((await db.query('SELECT key,value FROM coin_settings')).rows.map(r=>[r.key,r.value]));if(settings.coins_enabled!=='true')fail('Coins are currently unavailable');if(coins>maxCoinRedemption(products.map(item=>({qty:quantities.get(Number(item.id)),price:item.final_price_b2c}))))fail('Redeem up to 10 points per product unit; each product must have at least ₹1 payable');const wallet=(await db.query('SELECT * FROM coin_wallets WHERE user_id=$1 FOR UPDATE',[req.customer.id])).rows[0];if(!wallet||Number(wallet.balance)<coins)fail('Insufficient coins')}
     const giftWrap=body.totals?.giftWrap>0?Number(process.env.GIFT_WRAP_FEE||39):0,convenience=Number(process.env.DELIVERY_FEE||0)
     const payable=Math.round((subtotal-coins+giftWrap+convenience)*100)/100
     const totals={bagTotal:Math.round(bagTotal*100)/100,discountTotal:Math.round((bagTotal-subtotal)*100)/100,couponPct:0,couponDiscount:0,coinsApplied:coins,giftWrap,convenience,payable}

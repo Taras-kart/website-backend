@@ -9,6 +9,9 @@ const {
   setSetting
 } = require('../services/coinsService')
 
+const { sellingSql } = require('../utils/catalogue')
+const { maxCoinRedemption } = require('../services/coinRedemption')
+
 const router = express.Router()
 
 // ─── Customer routes ─────────────────────────────────────────────────────────
@@ -60,27 +63,36 @@ router.get('/wallet', async (req, res) => {
  */
 router.post('/validate', async (req, res) => {
   try {
-    const { email, coins_requested, order_subtotal, is_b2b } = req.body || {}
-    if (!email || !coins_requested || !order_subtotal) {
-      return res.status(400).json({ ok: false, message: 'email, coins_requested, order_subtotal required' })
+    const { email, coins_requested, items, is_b2b } = req.body || {}
+    if (!email || !Array.isArray(items) || !items.length || items.length > 100) {
+      return res.status(400).json({ ok: false, message: 'Email and checkout items are required' })
     }
-
+    if (!Number.isSafeInteger(Number(coins_requested)) || Number(coins_requested) <= 0) {
+      return res.status(400).json({ ok: false, message: 'Enter a positive whole number of coins' })
+    }
+    const requestedEmail = String(email).trim().toLowerCase()
+    if (requestedEmail !== String(req.customer?.email || '').toLowerCase()) {
+      return res.status(403).json({ ok: false, message: 'This wallet belongs to another account' })
+    }
+    const quantities = new Map()
+    for (const item of items) {
+      const id = Number(item.variant_id)
+      const qty = Number(item.qty)
+      if (!Number.isSafeInteger(id) || id <= 0 || !Number.isSafeInteger(qty) || qty <= 0 || qty > 1000) {
+        return res.status(400).json({ ok: false, message: 'Invalid checkout items' })
+      }
+      quantities.set(id, (quantities.get(id) || 0) + qty)
+    }
+    const ids = [...quantities.keys()]
     const pool = require('../db')
-    const userRow = await pool.query(
-      'SELECT id FROM userstaras WHERE LOWER(email) = LOWER($1) LIMIT 1',
-      [email]
-    )
-    if (!userRow.rowCount) {
-      return res.status(404).json({ ok: false, message: 'User not found' })
+    const rows = (await pool.query(`SELECT v.id, ${sellingSql('B2C')} AS unit_price
+      FROM product_variants v JOIN products p ON p.id = v.product_id
+      WHERE v.id=ANY($1::int[]) AND v.is_active=TRUE AND p.is_active=TRUE`, [ids])).rows
+    if (rows.length !== ids.length) {
+      return res.status(400).json({ ok: false, message: 'An item is no longer available' })
     }
-
-    const userId = userRow.rows[0].id
-    const result = await reserveCoins(
-      userId,
-      Number(coins_requested),
-      Number(order_subtotal),
-      Boolean(is_b2b)
-    )
+    const allowed = maxCoinRedemption(rows.map(row => ({ qty: quantities.get(Number(row.id)), price: row.unit_price })))
+    const result = await reserveCoins(req.customer.id, Number(coins_requested), allowed, Boolean(is_b2b))
 
     return res.json(result)
   } catch (e) {

@@ -132,7 +132,7 @@ async function creditSignupBonus(userId) {
  * Validate and reserve coins for an order at checkout.
  * Returns { ok, coinsApplied, discount } or { ok: false, message }
  */
-async function reserveCoins(userId, requestedCoins, orderSubtotal, isB2B = false) {
+async function reserveCoins(userId, requestedCoins, maxAllowed, isB2B = false) {
   if (!(await isEnabled())) return { ok: false, message: 'Coins are disabled' }
   if (requestedCoins <= 0) return { ok: false, message: 'Invalid coin amount' }
 
@@ -150,10 +150,9 @@ async function reserveCoins(userId, requestedCoins, orderSubtotal, isB2B = false
   const available = wallet.balance
   const coinsToUse = Math.min(requestedCoins, available)
 
-  // Cap coins to 10% of order subtotal (max discount per order)
-  const maxAllowed = Math.floor(orderSubtotal * 0.10)
-  const finalCoins = Math.min(coinsToUse, maxAllowed)
-  if (finalCoins <= 0) return { ok: false, message: `Coins usable up to 10% of order value (max ₹${maxAllowed})` }
+  const validatedLimit = Number.isSafeInteger(maxAllowed) && maxAllowed >= 0 ? maxAllowed : 0
+  const finalCoins = Math.min(coinsToUse, validatedLimit)
+  if (finalCoins <= 0) return { ok: false, message: 'No coins are redeemable for these items. Maximum 10 points per product unit, with at least ₹1 payable per unit.' }
 
   // Check redeem order limit — signup bonus only usable in first N orders
   const limitStr = await getSetting('coins_redeem_order_limit')
@@ -170,7 +169,7 @@ async function reserveCoins(userId, requestedCoins, orderSubtotal, isB2B = false
     ok: true,
     coinsApplied: finalCoins,
     discount: finalCoins, // 1 coin = ₹1
-    maxAllowed
+    maxAllowed: validatedLimit
   }
 }
 

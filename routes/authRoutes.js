@@ -9,6 +9,12 @@ require('dotenv').config();
 
 const { secret } = require('../middleware/auth');
 
+const resetSenderAddress = () => {
+  const raw = String(process.env.V1_FROM_EMAIL || process.env.FROM_EMAIL || process.env.SMTP_USER || '').trim()
+  return raw.match(/<([^<>]+)>/)?.[1] || raw
+}
+
+
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST || 'smtp.gmail.com',
   port: Number(process.env.SMTP_PORT || 465),
@@ -105,13 +111,15 @@ router.post('/forgot/start', async (req, res) => {
     }
 
     await transporter.sendMail({
-      from: process.env.FROM_EMAIL || process.env.SMTP_USER,
+      from: { name: 'V1 Garments', address: resetSenderAddress() },
       to: email,
-      subject: 'Your Tars Kart OTP',
-      text: `Your OTP is ${otp}. It is valid for 10 minutes.`,
-      html: `<div style="font-family:Arial,sans-serif;font-size:16px;color:#111">
-        <p>Your OTP is <strong>${otp}</strong></p>
-        <p>This code is valid for 10 minutes.</p>
+      subject: 'V1 Garments password reset OTP',
+      text: `Reset your V1 Garments password. Your OTP is ${otp}. It is valid for 10 minutes. Do not share this code.`,
+      html: `<div style="font-family:Arial,sans-serif;font-size:16px;color:#222">
+        <h2>V1 Garments</h2>
+        <p>Use this one-time code to reset your V1 Garments password:</p>
+        <p style="font-size:28px;letter-spacing:4px;font-weight:700">${otp}</p>
+        <p>This code expires in 10 minutes. Do not share it with anyone.</p>
       </div>`
     });
 
