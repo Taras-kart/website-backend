@@ -32,7 +32,12 @@ async function saveVariant(db,input,branchId,user,{reference='MANUAL',reclassify
   if (!branch.rows.length) fail('Select an active branch')
   const identity=[row.brand.toLowerCase(),row.name.toLowerCase(),row.pattern.toLowerCase(),row.gender,row.category_id].join('|')
   await db.query('SELECT pg_advisory_xact_lock(hashtext($1))',[identity])
-  let product=(await db.query(`SELECT id,category_id FROM products WHERE lower(trim(name))=lower($1) AND lower(trim(brand_name))=lower($2) AND lower(trim(COALESCE(pattern_code,'')))=lower($3) AND gender::text=$4 ORDER BY id LIMIT 1 FOR UPDATE`,[row.name,row.brand,row.pattern,row.gender])).rows[0]
+  let product=(await db.query(`SELECT id,category_id,is_active FROM products WHERE lower(trim(name))=lower($1) AND lower(trim(brand_name))=lower($2) AND lower(trim(COALESCE(pattern_code,'')))=lower($3) AND gender::text=$4 ORDER BY CASE WHEN category_id=$5 THEN 0 ELSE 1 END, is_active DESC, id DESC LIMIT 1 FOR UPDATE`,[row.name,row.brand,row.pattern,row.gender,row.category_id])).rows[0]
+  if (product && Number(product.category_id)!==row.category_id && product.is_active === false) {
+    const activeVariants = await db.query('SELECT 1 FROM product_variants WHERE product_id=$1 AND is_active=TRUE LIMIT 1',[product.id])
+    if (activeVariants.rows.length) fail('The retired style contains active variants in another category. Ask an administrator to review it.')
+    product = null
+  }
   if (product&&Number(product.category_id)!==row.category_id) {
     if (!reclassifyOnly) fail('This style already belongs to another category. Re-upload the original completed Excel to its matching child category, or ask an administrator to review it.')
     const parentCheck=await db.query(`SELECT c.name FROM product_categories c WHERE c.id=$1 AND c.parent_id=$2 AND c.is_active=TRUE`,[row.category_id,product.category_id])

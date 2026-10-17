@@ -9,6 +9,7 @@ const {
 const router = express.Router();
 const {saveVariant,validateVariant}=require('../services/catalogueWrite');
 const crypto=require('crypto');
+const {checkReuploadSafety}=require('../services/importReplay');
 const {
   parsePackImport
 } = require('../utils/packImport');
@@ -393,29 +394,37 @@ router.post('/:branchId/import', requireBranchAuth, upload.single('file'), async
       } catch(e) {return res.status(400).json({message:`Excel row ${i+2}: ${e.message}`});}
     }
     const hash=crypto.createHash('sha256').update(req.file.buffer).digest('hex');
-    const duplicate=await client.query('SELECT * FROM import_jobs WHERE branch_id=$1 AND category_id=$2 AND file_hash=$3',[branchId,categoryId,hash]);
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))',[`IMPORT:${branchId}:${categoryId}:${hash}`]);
+    const duplicate=await client.query("SELECT * FROM import_jobs WHERE branch_id=$1 AND category_id=$2 AND split_part(file_hash, ':reupload:', 1)=$3 ORDER BY id DESC LIMIT 1",[branchId,categoryId,hash]);
     if (duplicate.rows.length) {
       const existing=duplicate.rows[0];
-      // A previous all-error import can be retried after a deployment fix;
-      // a completed or partly successful import is never silently repeated.
       if (existing.status_enum==='FAILED' && Number(existing.rows_success||0)===0) {
-        await client.query('BEGIN');
         await client.query(`UPDATE import_rows SET status_enum=$2,error_msg=NULL,processed_at=NULL WHERE import_job_id=$1 AND status_enum=$3`,[existing.id,createdStatus,'ERROR']);
         await client.query(`UPDATE import_jobs SET status_enum='PENDING',rows_error=0,completed_at=NULL WHERE id=$1`,[existing.id]);
         await client.query('COMMIT');
         return res.json({...existing,status_enum:'PENDING',rows_error:0,reused:true,retried:true});
       }
-      return res.json({...existing,reused:true,alreadyProcessed:['COMPLETE','PARTIAL'].includes(String(existing.status_enum))});
+      if (['COMPLETE','PARTIAL'].includes(String(existing.status_enum))) {
+        const review = await checkReuploadSafety(client,preparedRows.map(row=>({...row,gender})));
+        if (!review.allowed) {
+          await client.query('ROLLBACK');
+          return res.status(409).json({message:review.reason,alreadyProcessed:true,previousJobId:existing.id});
+        }
+      } else {
+        await client.query('COMMIT');
+        return res.json({...existing,reused:true,alreadyProcessed:false});
+      }
     }
+    const importHash = duplicate.rows.length ? `${hash}:reupload:${crypto.randomUUID()}` : hash;
     const ext = (req.file.originalname.split('.').pop() || 'xlsx').toLowerCase();
     const name = `${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
     const stored = {url:''};
-    await client.query('BEGIN');
     const {
       rows
     } = await client.query(`INSERT INTO import_jobs (file_name, file_url, uploaded_by, status_enum, rows_total, rows_success, rows_error, branch_id, gender, category_id, file_hash)
        VALUES ($1, $2, $3, 'PENDING', $4, 0, 0, $5, $6, $7, $8)
-       RETURNING id, file_name, file_url, uploaded_by, status_enum, rows_total, rows_success, rows_error, uploaded_at, completed_at, branch_id, gender, category_id`, [req.file.originalname || name, stored.url, req.user.id, preparedRows.length, branchId, gender, categoryId, hash]);
+       RETURNING id, file_name, file_url, uploaded_by, status_enum, rows_total, rows_success, rows_error, uploaded_at, completed_at, branch_id, gender, category_id`, [req.file.originalname || name, stored.url, req.user.id, preparedRows.length, branchId, gender, categoryId, importHash]);
     const job = rows[0];
     if (preparedRows.length) {
       await insertImportRowsInBatches(client, job.id, preparedRows, createdStatus);
@@ -424,7 +433,8 @@ router.post('/:branchId/import', requireBranchAuth, upload.single('file'), async
     res.status(201).json({
       ...job,
       category_name: category.name,
-      category_slug: category.slug
+      category_slug: category.slug,
+      reuploaded: duplicate.rows.length > 0
     });
   } catch (e) {
     await client.query('ROLLBACK');
@@ -475,7 +485,7 @@ router.post('/:branchId/import/process/:jobId', requireBranchAuth, async (req, r
     // that was previously completed in the target category's direct parent.
     const previous = job.file_hash ? await pool.query(`SELECT 1 FROM import_jobs j
       JOIN product_categories target ON target.id=$3
-      WHERE j.branch_id=$1 AND j.file_hash=$2 AND j.id<>$4
+      WHERE j.branch_id=$1 AND split_part(j.file_hash, ':reupload:', 1)=split_part($2::text, ':reupload:', 1) AND j.id<>$4
       AND j.category_id=target.parent_id AND j.status_enum='COMPLETE'
       LIMIT 1`,[branchId,job.file_hash,categoryId,jobId]) : {rows:[]};
     const reclassifyOnly=previous.rows.length>0;

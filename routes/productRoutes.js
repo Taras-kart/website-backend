@@ -996,20 +996,18 @@ router.put('/:id(\\d+)', async (req, res) => {
     client.release();
   }
 });
-// Legacy route must use the same transactional delete as the management portal.
 router.delete('/:id(\\d+)', async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const { retireVariant } = require('../services/productRetirement');
-    // The access gateway restricts write access to /api/products/* to Super Admin.
-    const result = await retireVariant(client, req.params.id, { user: req.user });
+    const { deleteProductPermanently } = require('../services/productPermanentDelete');
+    const result = await deleteProductPermanently(client, { variantId: req.params.id, user: req.user });
     await client.query('COMMIT');
     return res.json(result);
   } catch (error) {
     await client.query('ROLLBACK');
-    return res.status(error.status || 500).json({
-      message: error.status ? error.message : 'Error deleting product'
+    return res.status(error.status || (error.code === '23503' ? 409 : 500)).json({
+      message: error.status ? error.message : error.code === '23503' ? 'Other records still reference this product. Deletion was rolled back.' : 'Error deleting product'
     });
   } finally {
     client.release();

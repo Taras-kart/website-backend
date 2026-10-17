@@ -3,7 +3,7 @@ const bcrypt=require('bcryptjs')
 const pool=require('../db')
 const {requireAuth,requireSuperAdmin,scopeBranch}=require('../middleware/auth')
 const {saveVariant,numeric,clean,fail}=require('../services/catalogueWrite')
-const {retireVariant}=require('../services/productRetirement')
+const {deleteProductPermanently}=require('../services/productPermanentDelete')
 const router=express.Router()
 const wrap=fn=>(req,res,next)=>Promise.resolve(fn(req,res)).catch(next)
 const audit=(db,req,action,id,details={},branch=null)=>db.query('INSERT INTO tara_audit_log(user_id,branch_id,action,entity_id,details) VALUES($1,$2,$3,$4,$5::jsonb)',[req.user.id,branch,action,String(id),JSON.stringify(details)])
@@ -109,16 +109,16 @@ router.post('/products',wrap(async(req,res)=>{
   const result=await transaction(async db=>{const row=await saveVariant(db,req.body,branch,req.user);await audit(db,req,'PRODUCT_RECEIVED',row.variant_id,{quantity:req.body.quantity},branch);return row})
   res.status(201).json(result)
 }))
-// Full product deletion (separate from hiding inventory in one branch).
-// Runs in a single transaction; barcode rows are actually removed for re-upload.
+router.delete('/products/by-product/:productId',wrap(async(req,res)=>{
+  const branch=scopeBranch(req,false)
+  const productId=numeric(req.params.productId,'Product',{integer:true,min:1})
+  const result=await transaction(db=>deleteProductPermanently(db,{productId,user:req.user,branchId:branch}))
+  res.json(result)
+}))
 router.delete('/products/:id',wrap(async(req,res)=>{
   const branch=scopeBranch(req,false)
-  const id=numeric(req.params.id,'Variant',{integer:true,min:1})
-  const result=await transaction(async db=>{
-    const retired=await retireVariant(db,id,{user:req.user,branchId:branch})
-    await audit(db,req,'PRODUCT_DELETED',id,{released_barcodes:retired.barcodes},branch)
-    return retired
-  })
+  const variantId=numeric(req.params.id,'Variant',{integer:true,min:1})
+  const result=await transaction(db=>deleteProductPermanently(db,{variantId,user:req.user,branchId:branch}))
   res.json(result)
 }))
 router.patch('/stock/:variantId',wrap(async(req,res)=>{
