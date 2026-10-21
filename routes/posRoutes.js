@@ -13,6 +13,7 @@ router.post('/confirm',requireAuth,async(req,res,next)=>{
     if(!/^[\w-]{8,100}$/.test(String(body.client_action_id||'')))fail('A valid sale reference is required')
     const method=String(body.payment?.method||'CASH').toUpperCase()
     if(!['CASH','UPI','CARD','ONLINE'].includes(method))fail('Select a valid payment method')
+    if(method!=='CASH'&&!String(body.payment?.ref||'').trim())fail('Payment reference required for non-cash sale')
     const quantities=new Map()
     for(const row of items){const id=numeric(row.variant_id,'Variant',{integer:true,min:1}),qty=numeric(row.qty,'Quantity',{integer:true,min:1,max:10000});quantities.set(id,(quantities.get(id)||0)+qty)}
     const key=`POS:${req.user.id}:${body.client_action_id}`,requestHash=crypto.createHash('sha256').update(JSON.stringify({branch,method,items:[...quantities].sort((a,b)=>a[0]-b[0])})).digest('hex')

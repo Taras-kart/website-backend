@@ -132,6 +132,8 @@ app.get('/api/debug/db', async (req, res) => {
 
 app.use((err, req, res, next) => {
   if (res.headersSent) return next(err)
+  if (err.code === 'LIMIT_FILE_SIZE') return res.status(413).json({message:'File exceeds the upload limit (10 MB for product spreadsheets). Split the file and try again.'})
+  if (err.code === 'LIMIT_UNEXPECTED_FILE') return res.status(400).json({message:'Unexpected upload field. Use the provided file picker.'})
   const status = err.status || (err.code === '23505' ? 409 : err.code === '23503' ? 409 : 500)
   if (status >= 500) console.error('API error:', err.code || err.name, err.message)
   return res.status(status).json({ message: status < 500 || err.status === 503 ? err.message : 'Unable to complete this request. Please try again.' })

@@ -369,7 +369,9 @@ router.post('/:branchId/import', requireBranchAuth, upload.single('file'), async
       });
     }
     if (!/\.(xlsx|xls|csv)$/i.test(req.file.originalname)) return res.status(400).json({message:'Upload an Excel or CSV file'});
-    const wb = XLSX.read(req.file.buffer, {type:'buffer',sheetRows:20002});
+    let wb;
+    try { wb = XLSX.read(req.file.buffer, {type:'buffer',sheetRows:20002}); }
+    catch (parseError) { return res.status(400).json({message:`Could not read spreadsheet. Check that it is a valid .xlsx, .xls or .csv file: ${parseError.message}`}); }
     const wsName = wb.SheetNames && wb.SheetNames[0];
     if (!wsName) return res.status(400).json({
       message: 'No worksheet in file'
@@ -378,6 +380,11 @@ router.post('/:branchId/import', requireBranchAuth, upload.single('file'), async
       defval: ''
     });
     const preparedRows = [];
+    const headers = Object.keys(allRows[0] || {}).map(h => String(h).replace(/[^a-z0-9]/gi,'').toLowerCase());
+    const legacyLayout = Object.keys(allRows[0] || {}).includes('__EMPTY') && Object.keys(allRows[0] || {}).includes('__EMPTY_1');
+    if (allRows.length && !legacyLayout && (!headers.some(h => ['productname','product','item','itemname'].includes(h)) || !headers.some(h => ['brand','brandname'].includes(h)))) {
+      return res.status(400).json({message:'Incorrect spreadsheet headers. Download the product import template and include ProductName and BrandName columns.'});
+    }
     for (const raw of allRows) {
       const prepared = rowToPreparedRecord(raw);
       if (shouldQueueRow(prepared)) preparedRows.push(prepared);

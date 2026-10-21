@@ -96,7 +96,8 @@ function normGender(v) {
  * Auth: requireAuth (any admin)
  */
 router.post('/import', requireAuth, upload.single('file'), async (req, res) => {
-  if (!req.file) return res.status(400).json({ message: 'No file uploaded' })
+  if (!req.file) return res.status(400).json({ message: 'Choose an Excel or CSV file before uploading.' })
+  if (!/\.(xlsx|xls|csv)$/i.test(req.file.originalname)) return res.status(400).json({message:'Only .xlsx, .xls and .csv files are allowed.'})
 
   const gender = normGender(req.body?.gender || 'WOMEN')
 
@@ -170,6 +171,7 @@ router.post('/import', requireAuth, upload.single('file'), async (req, res) => {
       }
 
       try {
+        await client.query('SAVEPOINT row_import')
         const existing = await client.query(
           'SELECT id FROM b2b_products WHERE style_code = $1',
           [styleCode]
@@ -218,7 +220,10 @@ router.post('/import', requireAuth, upload.single('file'), async (req, res) => {
           )
           results.inserted++
         }
+        await client.query('RELEASE SAVEPOINT row_import')
       } catch (rowErr) {
+        await client.query('ROLLBACK TO SAVEPOINT row_import')
+        await client.query('RELEASE SAVEPOINT row_import')
         results.errors.push(`Row ${i + 2} (${styleCode}): ${rowErr.message}`)
         results.skipped++
       }
