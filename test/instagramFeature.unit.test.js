@@ -1,5 +1,5 @@
 const test=require('node:test'),assert=require('node:assert/strict')
-const {codeFor,mediaFor,captionFor,insertReel}=require('../services/instagramProducts')
+const {codeFor,mediaFor,captionFor,parseMoney,insertReel}=require('../services/instagramProducts')
 const fs=require('fs'),path=require('path')
 
 test('numeric, alphanumeric and lowercase reel codes normalize',()=>{
@@ -49,4 +49,22 @@ test('global catalogue search supports exact reel code without replacing normal 
  const source=fs.readFileSync(path.join(__dirname,'../utils/catalogue.js'),'utf8')
  assert.match(source,/EXISTS \(SELECT 1 FROM instagram_products/)
  assert.match(source,/ig.is_published=TRUE/)
+})
+
+test('Excel MRP imports correctly when price exceeds 999',()=>{
+ assert.equal(parseMoney(1099),1099)
+ assert.equal(parseMoney('1,099'),1099)
+ assert.equal(parseMoney('₹ 1,099.00'),1099)
+ assert.equal(parseMoney('Rs. 1,50,000'),150000)
+ assert.equal(parseMoney('1,20,500.50'),120500.50)
+ assert.equal(parseMoney('', 'Selling price', true),'')
+ for(const item of ['1,09,9','₹ abc','1,2,3',-1/0])assert.throws(()=>parseMoney(item),/invalid/i)
+})
+test('code matching and uploads have server-side safeguards',()=>{
+ const route=fs.readFileSync(path.join(__dirname,'../routes/instagramProductRoutes.js'),'utf8')
+ assert.match(route,/raw:true,blankrows:false/)
+ assert.match(route,/router\.post\('\/images\/precheck'/)
+ assert.match(route,/router\.post\('\/images\/assign'/)
+ assert.match(route,/ON CONFLICT\(ean_code,image_type\)/)
+ assert.match(route,/router\.use\(requireAuth\)/)
 })
