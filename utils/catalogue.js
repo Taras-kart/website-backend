@@ -31,7 +31,12 @@ function filters(query = {}, type = 'B2C') {
   if (query.gender) add('p.gender::text=ANY(?::text[])',values(query.gender).map(v=>v.toUpperCase()))
   if (query.brand) add(`${brandSql('p.brand_name')}=ANY(?::text[])`,values(query.brand))
   if (query.category && !params[1]) add('lower(pc.name)=lower(?)', clean(query.category))
-  for (const word of clean(query.q).split(/\s+/).filter(Boolean).slice(0,8)) add(`concat_ws(' ',p.name,${brandSql('p.brand_name')},pc.name,p.pattern_code,v.colour,p.gender) ILIKE ?`, `%${word.replace(/[\\%_]/g, '\\$&')}%`)
+  const words=clean(query.q).split(/\s+/).filter(Boolean).slice(0,8)
+  if(words.length===1 && /^[A-Za-z0-9_-]{3,32}$/.test(words[0])) {
+    const textId=params.length+1,codeId=params.length+2
+    params.push(`%${words[0].replace(/[\\%_]/g, '\\$&')}%`,words[0].toUpperCase())
+    where.push(`(concat_ws(' ',p.name,${brandSql('p.brand_name')},pc.name,p.pattern_code,v.colour,p.gender) ILIKE $${textId} OR EXISTS (SELECT 1 FROM instagram_products ig WHERE ig.variant_id=v.id AND ig.code=$${codeId} AND ig.is_published=TRUE AND ($1::bigint IS NULL OR ig.branch_id=$1)))`)
+  } else for(const word of words) add(`concat_ws(' ',p.name,${brandSql('p.brand_name')},pc.name,p.pattern_code,v.colour,p.gender) ILIKE ?`, `%${word.replace(/[\\%_]/g, '\\$&')}%`)
   if (query.min !== undefined && clean(query.min)) add(`${sellingSql(type)}>=?::numeric`, Math.max(0,Number(query.min)||0))
   if (query.max !== undefined && clean(query.max)) add(`${sellingSql(type)}<=?::numeric`, Math.max(0,Number(query.max)||0))
   if (query.subtype) {
