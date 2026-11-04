@@ -78,8 +78,26 @@ router.get('/:id(\\d+)/family',wrap(async(req,res) => {
   if (!keys.rows.length) return res.status(404).json({message:'Product not found'})
   const ids = (await pool.query(`${categoryCte} SELECT v.id ${joins} WHERE ${activeSql} AND ${styleSql}=$3 ORDER BY v.colour,v.size,v.id`,[branchId(),null,keys.rows[0].style_key])).rows.map(row=>row.id)
   const variants = await hydrate(ids)
-  const product = variants.find(row=>Number(row.id)===id)
-  if (!product) return res.status(404).json({message:'Product not available'})
-  cache(res).json({product,variants})
+  const selected = variants.find(row=>Number(row.id)===id)
+  if (!selected) return res.status(404).json({message:'Product not available'})
+
+  // A Reel code belongs to an individual variant and branch, not to the whole style.
+  // Only show published codes. Ordinary products have no Instagram code.
+  const codes = await pool.query(`
+    SELECT DISTINCT ON (i.variant_id) i.variant_id, i.code
+    FROM instagram_products i
+    JOIN branches b ON b.id = i.branch_id AND b.is_active = TRUE
+    WHERE i.variant_id = ANY($1::bigint[])
+      AND i.is_published = TRUE
+      AND ($2::bigint IS NULL OR i.branch_id = $2::bigint)
+    ORDER BY i.variant_id, i.created_at DESC, i.id DESC
+  `, [ids, branchId()])
+  const codeByVariant = new Map(codes.rows.map(row => [Number(row.variant_id), row.code]))
+  const variantsWithCodes = variants.map(row => ({
+    ...row,
+    instagram_code: codeByVariant.get(Number(row.id)) || null
+  }))
+  const product = variantsWithCodes.find(row => Number(row.id) === id)
+  cache(res).json({product, variants: variantsWithCodes})
 }))
 module.exports = router
